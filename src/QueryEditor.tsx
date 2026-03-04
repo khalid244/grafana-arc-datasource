@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
-import { CodeEditor, CodeEditorSuggestionItem, CodeEditorSuggestionItemKind, InlineField, Input, RadioButtonGroup, Select } from '@grafana/ui';
+import { CodeEditor, InlineField, Input, RadioButtonGroup, Select } from '@grafana/ui';
 import { ArcDataSource } from './datasource';
 import { ArcDataSourceOptions, ArcQuery } from './types';
 
@@ -26,12 +26,14 @@ const MIN_EDITOR_HEIGHT = 100;
 const MAX_EDITOR_HEIGHT = 600;
 const DEFAULT_EDITOR_HEIGHT = 200;
 
-const MACRO_SUGGESTIONS: CodeEditorSuggestionItem[] = [
-  { label: '$__timeFilter', kind: CodeEditorSuggestionItemKind.Method, insertText: '$__timeFilter(time)', detail: 'Time range filter' },
-  { label: '$__timeGroup', kind: CodeEditorSuggestionItemKind.Method, insertText: "$__timeGroup(time, '$__interval')", detail: 'Time bucket' },
-  { label: '$__timeFrom', kind: CodeEditorSuggestionItemKind.Method, insertText: '$__timeFrom()', detail: 'Start of time range' },
-  { label: '$__timeTo', kind: CodeEditorSuggestionItemKind.Method, insertText: '$__timeTo()', detail: 'End of time range' },
-  { label: '$__interval', kind: CodeEditorSuggestionItemKind.Text, detail: 'Auto interval' },
+// Use string values directly to avoid runtime dependency on CodeEditorSuggestionItemKind enum
+// which may not be exported in all Grafana versions
+const MACRO_SUGGESTIONS: any[] = [
+  { label: '$__timeFilter', kind: 'method', insertText: '$__timeFilter(time)', detail: 'Time range filter' },
+  { label: '$__timeGroup', kind: 'method', insertText: "$__timeGroup(time, '$__interval')", detail: 'Time bucket' },
+  { label: '$__timeFrom', kind: 'method', insertText: '$__timeFrom()', detail: 'Start of time range' },
+  { label: '$__timeTo', kind: 'method', insertText: '$__timeTo()', detail: 'End of time range' },
+  { label: '$__interval', kind: 'text', detail: 'Auto interval' },
 ];
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
@@ -62,7 +64,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
   }, [datasource, query.sql, query.database]);
 
-  const onSQLChange = useCallback((value: string) => {
+  const onSQLEdit = useCallback((value: string) => {
+    onChange({ ...query, sql: value });
+  }, [onChange, query]);
+
+  const onSQLBlur = useCallback((value: string) => {
     onChange({ ...query, sql: value });
     onRunQuery();
   }, [onChange, onRunQuery, query]);
@@ -103,10 +109,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     });
   }, [onChange, onRunQuery, query]);
 
-  const getSuggestions = useCallback((): CodeEditorSuggestionItem[] => [
+  const getSuggestions = useCallback(() => [
     ...MACRO_SUGGESTIONS,
-    ...tables.map((t) => ({ label: t, kind: CodeEditorSuggestionItemKind.Field, detail: 'Table' })),
-    ...columns.map((c) => ({ label: c.name, kind: CodeEditorSuggestionItemKind.Property, detail: c.type })),
+    ...tables.map((t) => ({ label: t, kind: 'field', detail: 'Table' })),
+    ...columns.map((c) => ({ label: c.name, kind: 'property', detail: c.type })),
   ], [tables, columns]);
 
   // Resize handle
@@ -177,7 +183,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         <CodeEditor
           language="sql"
           value={query.sql || ''}
-          onBlur={onSQLChange}
+          onChange={onSQLEdit}
+          onBlur={onSQLBlur}
           onSave={onRunQueryFromEditor}
           onEditorDidMount={onEditorDidMount}
           height={`${editorHeight}px`}

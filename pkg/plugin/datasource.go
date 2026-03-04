@@ -817,18 +817,26 @@ func (d *ArcDatasource) handleTables(ctx context.Context, req *backend.CallResou
 		}
 	}
 
-	sql := fmt.Sprintf("SHOW TABLES FROM %s", database)
-	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
-	frame, err := QueryJSON(ctx, settings, sql, dummyRange)
-	if err != nil {
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusInternalServerError,
-			Body:   []byte(fmt.Sprintf(`{"error":%q}`, err.Error())),
-		})
+	// Override database if specified in query param
+	if database != settings.settings.Database {
+		overridden := *settings
+		overridden.settings.Database = database
+		settings = &overridden
 	}
 
 	type tableEntry struct {
 		Name string `json:"name"`
+	}
+
+	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
+	frame, err := QueryJSON(ctx, settings, "SHOW TABLES", dummyRange)
+	if err != nil {
+		body, _ := json.Marshal([]tableEntry{})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusOK,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    body,
+		})
 	}
 	var tables []tableEntry
 	if frame != nil && len(frame.Fields) > 0 {
@@ -869,33 +877,37 @@ func (d *ArcDatasource) handleColumns(ctx context.Context, req *backend.CallReso
 		})
 	}
 
-	// Parse optional ?database= query param
-	database := settings.settings.Database
+	// Override database if specified in query param
 	if req.URL != "" {
 		if idx := strings.Index(req.URL, "database="); idx >= 0 {
 			val := req.URL[idx+len("database="):]
 			if end := strings.IndexByte(val, '&'); end >= 0 {
 				val = val[:end]
 			}
-			if val != "" {
-				database = val
+			if val != "" && val != settings.settings.Database {
+				overridden := *settings
+				overridden.settings.Database = val
+				settings = &overridden
 			}
 		}
-	}
-
-	sql := fmt.Sprintf("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '%s' AND table_catalog = '%s'", table, database)
-	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
-	frame, err := QueryJSON(ctx, settings, sql, dummyRange)
-	if err != nil {
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusInternalServerError,
-			Body:   []byte(fmt.Sprintf(`{"error":%q}`, err.Error())),
-		})
 	}
 
 	type columnEntry struct {
 		Name string `json:"name"`
 		Type string `json:"type"`
+	}
+
+	sql := fmt.Sprintf("DESCRIBE %s", table)
+	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
+	frame, err := QueryJSON(ctx, settings, sql, dummyRange)
+	if err != nil {
+		// Table may not exist — return empty array instead of error
+		body, _ := json.Marshal([]columnEntry{})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusOK,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    body,
+		})
 	}
 	var columns []columnEntry
 	if frame != nil && len(frame.Fields) >= 2 {
