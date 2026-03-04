@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -779,6 +780,143 @@ func containsAggregationWithoutTimeGroup(sql string) bool {
 		return true
 	}
 	return false
+}
+
+// CallResource handles resource API calls from the frontend (e.g., schema metadata)
+func (d *ArcDatasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	settings, err := getSettings(ctx, req.PluginContext)
+	if err != nil {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: http.StatusInternalServerError,
+			Body:   []byte(fmt.Sprintf(`{"error":%q}`, err.Error())),
+		})
+	}
+
+	switch req.Path {
+	case "tables":
+		return d.handleTables(ctx, req, settings, sender)
+	case "columns":
+		return d.handleColumns(ctx, req, settings, sender)
+	default:
+		return sender.Send(&backend.CallResourceResponse{Status: http.StatusNotFound, Body: []byte(`{"error":"not found"}`)})
+	}
+}
+
+func (d *ArcDatasource) handleTables(ctx context.Context, req *backend.CallResourceRequest, settings *ArcInstanceSettings, sender backend.CallResourceResponseSender) error {
+	// Parse optional ?database= query param
+	database := settings.settings.Database
+	if req.URL != "" {
+		if idx := strings.Index(req.URL, "database="); idx >= 0 {
+			val := req.URL[idx+len("database="):]
+			if end := strings.IndexByte(val, '&'); end >= 0 {
+				val = val[:end]
+			}
+			if val != "" {
+				database = val
+			}
+		}
+	}
+
+	sql := fmt.Sprintf("SHOW TABLES FROM %s", database)
+	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
+	frame, err := QueryJSON(ctx, settings, sql, dummyRange)
+	if err != nil {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: http.StatusInternalServerError,
+			Body:   []byte(fmt.Sprintf(`{"error":%q}`, err.Error())),
+		})
+	}
+
+	type tableEntry struct {
+		Name string `json:"name"`
+	}
+	var tables []tableEntry
+	if frame != nil && len(frame.Fields) > 0 {
+		for i := 0; i < frame.Fields[0].Len(); i++ {
+			if v, ok := frame.Fields[0].ConcreteAt(i); ok {
+				tables = append(tables, tableEntry{Name: fmt.Sprintf("%v", v)})
+			}
+		}
+	}
+	if tables == nil {
+		tables = []tableEntry{}
+	}
+
+	body, _ := json.Marshal(tables)
+	return sender.Send(&backend.CallResourceResponse{
+		Status: http.StatusOK,
+		Headers: map[string][]string{"Content-Type": {"application/json"}},
+		Body:   body,
+	})
+}
+
+func (d *ArcDatasource) handleColumns(ctx context.Context, req *backend.CallResourceRequest, settings *ArcInstanceSettings, sender backend.CallResourceResponseSender) error {
+	// Parse ?table= query param (required)
+	var table string
+	if req.URL != "" {
+		if idx := strings.Index(req.URL, "table="); idx >= 0 {
+			val := req.URL[idx+len("table="):]
+			if end := strings.IndexByte(val, '&'); end >= 0 {
+				val = val[:end]
+			}
+			table = val
+		}
+	}
+	if table == "" {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: http.StatusBadRequest,
+			Body:   []byte(`{"error":"table parameter is required"}`),
+		})
+	}
+
+	// Parse optional ?database= query param
+	database := settings.settings.Database
+	if req.URL != "" {
+		if idx := strings.Index(req.URL, "database="); idx >= 0 {
+			val := req.URL[idx+len("database="):]
+			if end := strings.IndexByte(val, '&'); end >= 0 {
+				val = val[:end]
+			}
+			if val != "" {
+				database = val
+			}
+		}
+	}
+
+	sql := fmt.Sprintf("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '%s' AND table_catalog = '%s'", table, database)
+	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
+	frame, err := QueryJSON(ctx, settings, sql, dummyRange)
+	if err != nil {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: http.StatusInternalServerError,
+			Body:   []byte(fmt.Sprintf(`{"error":%q}`, err.Error())),
+		})
+	}
+
+	type columnEntry struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	var columns []columnEntry
+	if frame != nil && len(frame.Fields) >= 2 {
+		for i := 0; i < frame.Fields[0].Len(); i++ {
+			name, ok1 := frame.Fields[0].ConcreteAt(i)
+			typ, ok2 := frame.Fields[1].ConcreteAt(i)
+			if ok1 && ok2 {
+				columns = append(columns, columnEntry{Name: fmt.Sprintf("%v", name), Type: fmt.Sprintf("%v", typ)})
+			}
+		}
+	}
+	if columns == nil {
+		columns = []columnEntry{}
+	}
+
+	body, _ := json.Marshal(columns)
+	return sender.Send(&backend.CallResourceResponse{
+		Status: http.StatusOK,
+		Headers: map[string][]string{"Content-Type": {"application/json"}},
+		Body:   body,
+	})
 }
 
 func toTime(val interface{}) (time.Time, bool) {

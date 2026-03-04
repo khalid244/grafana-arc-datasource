@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { InlineField, TextArea } from '@grafana/ui';
+import { CodeEditor } from '@grafana/ui';
 
 interface VariableQuery {
   query: string;
@@ -13,40 +13,29 @@ interface VariableQueryProps {
 export const VariableQueryEditor: React.FC<VariableQueryProps> = ({ query, onChange }) => {
   const [state, setState] = useState(query);
 
-  const saveQuery = () => {
-    onChange(state, state.query);
-  };
-
-  const handleChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setState({
-      ...state,
-      query: event.target.value,
-    });
+  const saveQuery = (value: string) => {
+    const updated = { ...state, query: value };
+    setState(updated);
+    onChange(updated, value);
   };
 
   return (
     <>
-      <InlineField
-        label="Query"
-        labelWidth={20}
-        tooltip="SQL query to generate variable values. First column will be used."
-        grow
-      >
-        <TextArea
-          value={state.query || ''}
-          onChange={handleChange}
-          onBlur={saveQuery}
-          placeholder="SELECT DISTINCT host FROM telegraf.cpu ORDER BY host"
-          rows={3}
-          style={{
-            fontFamily: 'monospace',
-            fontSize: '13px',
-            width: '100%'
-          }}
-        />
-      </InlineField>
+      <div style={{ marginBottom: '4px' }}>
+        <label className="gf-form-label">Query</label>
+      </div>
+      <CodeEditor
+        language="sql"
+        value={state.query || ''}
+        onBlur={saveQuery}
+        onSave={saveQuery}
+        height="100px"
+        showMiniMap={false}
+        showLineNumbers={true}
+        monacoOptions={{ wordWrap: 'on', scrollBeyondLastLine: false }}
+      />
 
-      <div style={{ marginTop: '8px', marginLeft: '20px', paddingLeft: '8px' }}>
+      <div style={{ marginTop: '8px', paddingLeft: '8px' }}>
         <small style={{ color: '#6e6e6e', display: 'block', lineHeight: '1.6' }}>
           <strong>Examples:</strong>
           <br />

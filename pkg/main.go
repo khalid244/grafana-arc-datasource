@@ -13,8 +13,9 @@ func main() {
 	
 	// Serve plugin
 	if err := datasource.Serve(datasource.ServeOpts{
-		QueryDataHandler:   ds,
-		CheckHealthHandler: ds,
+		QueryDataHandler:    ds,
+		CheckHealthHandler:  ds,
+		CallResourceHandler: ds,
 	}); err != nil {
 		log.DefaultLogger.Error(err.Error())
 		os.Exit(1)

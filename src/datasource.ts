@@ -6,7 +6,7 @@ import {
   ScopedVars,
   VariableWithMultiSupport,
 } from '@grafana/data';
-import { frameToMetricFindValue, DataSourceWithBackend, getTemplateSrv } from '@grafana/runtime';
+import { frameToMetricFindValue, DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 import { ArcQuery, ArcDataSourceOptions, defaultQuery } from './types';
 import { lastValueFrom } from 'rxjs';
 
@@ -98,5 +98,27 @@ export class ArcDataSource extends DataSourceWithBackend<ArcQuery, ArcDataSource
       ...query,
       sql: getTemplateSrv().replace(query.sql, scopedVars, this.interpolateVariable),
     };
+  }
+
+  async getTables(database?: string): Promise<string[]> {
+    const params = database ? `?database=${encodeURIComponent(database)}` : '';
+    try {
+      const res = await getBackendSrv().get(`/api/datasources/uid/${this.uid}/resources/tables${params}`);
+      return (res || []).map((t: { name: string }) => t.name);
+    } catch {
+      return [];
+    }
+  }
+
+  async getColumns(table: string, database?: string): Promise<Array<{ name: string; type: string }>> {
+    const params = new URLSearchParams({ table });
+    if (database) {
+      params.set('database', database);
+    }
+    try {
+      return await getBackendSrv().get(`/api/datasources/uid/${this.uid}/resources/columns?${params.toString()}`);
+    } catch {
+      return [];
+    }
   }
 }
