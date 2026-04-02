@@ -40,8 +40,8 @@
       }
     ],
     "screenshots": [],
-    "version": "1.2.0",
-    "updated": "2026-03-04"
+    "version": "1.2.1",
+    "updated": "2026-04-03"
   },
   "dependencies": {
     "grafanaDependency": ">=10.0.0",
