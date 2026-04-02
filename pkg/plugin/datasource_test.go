@@ -411,6 +411,8 @@ func TestContainsLIMIT(t *testing.T) {
 		{"SELECT limited FROM t", false},                            // "limited" is not " LIMIT "
 		{"SELECT * FROM t WHERE name = 'THE LIMIT 10'", false},      // LIMIT inside string literal
 		{"SELECT * FROM t WHERE desc = 'NO LIMIT ' ORDER BY id", false}, // LIMIT inside string literal with trailing space
+		{"SELECT *\nFROM t\nORDER BY time DESC\nLIMIT 200", true},         // LIMIT preceded by newline
+		{"SELECT *\n\tFROM t\n\tLIMIT 10", true},                          // LIMIT preceded by newline+tab
 	}
 	for _, c := range cases {
 		result := containsLIMIT(c.sql)

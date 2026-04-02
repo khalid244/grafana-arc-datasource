@@ -717,8 +717,12 @@ func stripStringLiterals(sql string) string {
 
 // containsLIMIT checks if SQL contains a LIMIT clause (case-insensitive).
 // Strips string literals first to avoid false positives on LIMIT inside quoted values.
+// Normalizes whitespace (newlines, tabs) to spaces so "\nLIMIT 200" is detected.
 func containsLIMIT(sql string) bool {
-	return strings.Contains(strings.ToUpper(stripStringLiterals(sql)), " LIMIT ")
+	upper := strings.ToUpper(stripStringLiterals(sql))
+	// Normalize all whitespace to spaces so newlines/tabs before LIMIT are caught
+	normalized := strings.Join(strings.Fields(upper), " ")
+	return strings.Contains(normalized, " LIMIT ")
 }
 
 // containsAggregationWithoutTimeGroup returns true if the SQL has aggregation
