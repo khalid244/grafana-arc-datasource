@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-04-30
+
+### Fixed
+- Fix Database/Format/Splitting fields being reset when typing in the SQL editor. Grafana's `CodeEditor` captures its callback props on mount and never re-binds them, so `onChange`/`onBlur`/`onSave` always saw the original `query` from the closure — wiping any sibling field changes made afterward. Read the latest query through a ref instead.
+
 ## [1.2.0] - 2026-03-04
 
 ### Added
@@ -66,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backend-only credential access
 - HTTPS support
 
-[Unreleased]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.0...v1.2.2
 [1.2.0]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/basekick-labs/grafana-arc-datasource/releases/tag/v1.0.0

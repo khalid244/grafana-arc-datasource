@@ -42,6 +42,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [columns, setColumns] = useState<Array<{ name: string; type: string }>>([]);
   const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
+  // CodeEditor captures callbacks on mount and never re-binds them. Read the
+  // latest query through a ref so edits don't clobber sibling fields (database,
+  // splitDuration, format) with stale values.
+  const queryRef = useRef(query);
+  useEffect(() => {
+    queryRef.current = query;
+  }, [query]);
+
   // Migrate rawSql from Postgres/MySQL/MSSQL/ClickHouse datasources
   useEffect(() => {
     if (!query.sql && query.rawSql) {
@@ -65,18 +73,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   }, [datasource, query.sql, query.database]);
 
   const onSQLEdit = useCallback((value: string) => {
-    onChange({ ...query, sql: value });
-  }, [onChange, query]);
+    onChange({ ...queryRef.current, sql: value });
+  }, [onChange]);
 
   const onSQLBlur = useCallback((value: string) => {
-    onChange({ ...query, sql: value });
+    onChange({ ...queryRef.current, sql: value });
     onRunQuery();
-  }, [onChange, onRunQuery, query]);
+  }, [onChange, onRunQuery]);
 
   const onRunQueryFromEditor = useCallback((value: string) => {
-    onChange({ ...query, sql: value });
+    onChange({ ...queryRef.current, sql: value });
     onRunQuery();
-  }, [onChange, onRunQuery, query]);
+  }, [onChange, onRunQuery]);
 
   const onFormatChange = (value: string) => {
     onChange({ ...query, format: value as 'time_series' | 'table' });
@@ -103,11 +111,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
       run: () => {
         const value = editor.getValue();
-        onChange({ ...query, sql: value });
+        onChange({ ...queryRef.current, sql: value });
         onRunQuery();
       },
     });
-  }, [onChange, onRunQuery, query]);
+  }, [onChange, onRunQuery]);
 
   const getSuggestions = useCallback(() => [
     ...MACRO_SUGGESTIONS,
