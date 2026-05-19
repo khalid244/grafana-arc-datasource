@@ -193,11 +193,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         <div
           onMouseDown={onResizeMouseDown}
           style={{
-            height: '6px',
+            height: '4px',
             cursor: 'row-resize',
             background: 'transparent',
-            borderBottom: '2px solid rgba(128, 128, 128, 0.3)',
-            marginBottom: '4px',
           }}
         />
 
