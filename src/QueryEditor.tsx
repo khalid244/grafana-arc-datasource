@@ -76,24 +76,32 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onChange({ ...queryRef.current, sql: value });
   }, [onChange]);
 
+  // onChange queues a React state update; onRunQuery runs synchronously and
+  // would read the stale query if invoked in the same tick. Defer the run
+  // so the state update propagates first — without this, blurring the
+  // editor after typing executes the previous SQL.
+  const runAfterChange = useCallback(() => {
+    queueMicrotask(onRunQuery);
+  }, [onRunQuery]);
+
   const onSQLBlur = useCallback((value: string) => {
     onChange({ ...queryRef.current, sql: value });
-    onRunQuery();
-  }, [onChange, onRunQuery]);
+    runAfterChange();
+  }, [onChange, runAfterChange]);
 
   const onRunQueryFromEditor = useCallback((value: string) => {
     onChange({ ...queryRef.current, sql: value });
-    onRunQuery();
-  }, [onChange, onRunQuery]);
+    runAfterChange();
+  }, [onChange, runAfterChange]);
 
   const onFormatChange = (value: string) => {
     onChange({ ...query, format: value as 'time_series' | 'table' });
-    onRunQuery();
+    runAfterChange();
   };
 
   const onSplitChange = (option: SelectableValue<string>) => {
     onChange({ ...query, splitDuration: option?.value || 'auto' });
-    onRunQuery();
+    runAfterChange();
   };
 
   const onDatabaseChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,7 +109,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   };
 
   const onDatabaseBlur = () => {
-    onRunQuery();
+    runAfterChange();
   };
 
   const onEditorDidMount = useCallback((editor: any, monaco: any) => {
@@ -112,10 +120,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       run: () => {
         const value = editor.getValue();
         onChange({ ...queryRef.current, sql: value });
-        onRunQuery();
+        runAfterChange();
       },
     });
-  }, [onChange, onRunQuery]);
+  }, [onChange, runAfterChange]);
 
   const getSuggestions = useCallback(() => [
     ...MACRO_SUGGESTIONS,

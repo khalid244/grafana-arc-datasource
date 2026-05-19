@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-05-19
+
+### Fixed
+- Fix QueryEditor running the previous SQL when the editor loses focus. `onChange` queued a React state update while `onRunQuery` fired in the same tick, so the parent query state hadn't propagated yet. Deferred the run via `queueMicrotask` across blur, save, Cmd/Ctrl+Enter, and the Format/Splitting/Database controls.
+
 ## [1.2.2] - 2026-04-30
 
 ### Fixed
