@@ -200,7 +200,50 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             marginBottom: '4px',
           }}
         />
-        <div style={{ fontSize: '12px', color: '#6e6e6e' }}>
+
+        {/* Options — Loki-style Collapse directly under the query, above the
+            Macros help. Plain panel colors, inline summary of current values
+            when collapsed, full-width expanded. Pattern lifted from Grafana's
+            own Prometheus/Loki QueryOptionGroup. */}
+        <Collapse
+          collapsible
+          isOpen={optionsOpen}
+          onToggle={setOptionsOpen}
+          label={
+            <span style={{ display: 'inline-flex', gap: 16, alignItems: 'center' }}>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Options</span>
+              {!optionsOpen && (
+                <span style={{ display: 'inline-flex', gap: 16, fontSize: 12, color: '#9fa1a6', fontWeight: 'normal' }}>
+                  <span>Splitting: <span style={{ color: '#ccccdc' }}>{labelFor(SPLIT_OPTIONS, split)}</span></span>
+                  <span>Database: <span style={{ color: '#ccccdc' }}>{db || 'default'}</span></span>
+                </span>
+              )}
+            </span>
+          }
+        >
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', alignItems: 'center', paddingTop: 4 }}>
+            <InlineField
+              label="Splitting"
+              tooltip="Parallel time-range chunking for faster results. Applies to time-bucketed ($__timeGroup) and raw queries. Auto-skipped for: GROUP BY, DISTINCT, COUNT/SUM/AVG without $__timeGroup, LIMIT, and no $__timeFilter."
+            >
+              <Select options={SPLIT_OPTIONS} value={split} onChange={onSplitChange} width={16} />
+            </InlineField>
+            <InlineField
+              label="Database"
+              tooltip="Override the default database for this query. Leave empty to use the datasource default."
+            >
+              <Input
+                value={query.database || ''}
+                onChange={onDatabaseChange}
+                onBlur={onDatabaseBlur}
+                placeholder="default"
+                width={16}
+              />
+            </InlineField>
+          </div>
+        </Collapse>
+
+        <div style={{ fontSize: '12px', color: '#6e6e6e', marginTop: '8px' }}>
           <div style={{ marginBottom: '4px' }}>
             <strong>Macros:</strong> $__timeFilter(column), $__timeFrom(), $__timeTo(), $__interval, $__timeGroup(column, interval) &mdash; <strong>Cmd/Ctrl+Enter</strong> to run
           </div>
@@ -209,47 +252,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           </div>
         </div>
       </div>
-
-      {/* Options — Loki-style Collapse below the editor. Plain panel colors,
-          inline summary of current values when collapsed, full-width expanded.
-          Pattern lifted from Grafana's own Prometheus/Loki QueryOptionGroup. */}
-      <Collapse
-        collapsible
-        isOpen={optionsOpen}
-        onToggle={setOptionsOpen}
-        label={
-          <span style={{ display: 'inline-flex', gap: 16, alignItems: 'center' }}>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>Options</span>
-            {!optionsOpen && (
-              <span style={{ display: 'inline-flex', gap: 16, fontSize: 12, color: '#9fa1a6', fontWeight: 'normal' }}>
-                <span>Splitting: <span style={{ color: '#ccccdc' }}>{labelFor(SPLIT_OPTIONS, split)}</span></span>
-                <span>Database: <span style={{ color: '#ccccdc' }}>{db || 'default'}</span></span>
-              </span>
-            )}
-          </span>
-        }
-      >
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', alignItems: 'center', paddingTop: 4 }}>
-          <InlineField
-            label="Splitting"
-            tooltip="Parallel time-range chunking for faster results. Applies to time-bucketed ($__timeGroup) and raw queries. Auto-skipped for: GROUP BY, DISTINCT, COUNT/SUM/AVG without $__timeGroup, LIMIT, and no $__timeFilter."
-          >
-            <Select options={SPLIT_OPTIONS} value={split} onChange={onSplitChange} width={16} />
-          </InlineField>
-          <InlineField
-            label="Database"
-            tooltip="Override the default database for this query. Leave empty to use the datasource default."
-          >
-            <Input
-              value={query.database || ''}
-              onChange={onDatabaseChange}
-              onBlur={onDatabaseBlur}
-              placeholder="default"
-              width={16}
-            />
-          </InlineField>
-        </div>
-      </Collapse>
     </div>
   );
 }
