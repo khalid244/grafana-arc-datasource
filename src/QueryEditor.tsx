@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
-import { CodeEditor, InlineField, Input, RadioButtonGroup, Select } from '@grafana/ui';
+import { CodeEditor, Collapse, InlineField, Input, RadioButtonGroup, Select } from '@grafana/ui';
 import { ArcDataSource } from './datasource';
 import { ArcDataSourceOptions, ArcQuery } from './types';
 
@@ -35,6 +35,13 @@ const MACRO_SUGGESTIONS: any[] = [
   { label: '$__timeTo', kind: 'method', insertText: '$__timeTo()', detail: 'End of time range' },
   { label: '$__interval', kind: 'text', detail: 'Auto interval' },
 ];
+
+// labelFor returns the human label for a Select option value, falling back
+// to the raw value when no match. Used by the Options summary line.
+function labelFor<T extends string | undefined>(opts: Array<SelectableValue<T>>, val: T): string {
+  const m = opts.find((o) => o.value === val);
+  return m?.label ?? String(val ?? '');
+}
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const [editorHeight, setEditorHeight] = useState(DEFAULT_EDITOR_HEIGHT);
@@ -156,98 +163,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     document.addEventListener('mouseup', onMouseUp);
   }, [editorHeight]);
 
-  // Count non-default options so the Options button can display a badge
-  // when the user has changed something — visible without expanding.
   const format = query.format || 'time_series';
   const split = query.splitDuration || 'auto';
   const db = query.database || '';
-  const dirtyCount =
-    (format !== 'time_series' ? 1 : 0) +
-    (split !== 'auto' ? 1 : 0) +
-    (db !== '' ? 1 : 0);
 
   return (
     <div className="gf-form-group">
-      {/* Top row: Format on the left, Options ▾ button on the right. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+      {/* Format on top — the only setting changed per-panel, kept close to the SQL. */}
+      <div style={{ marginBottom: 8 }}>
         <InlineField label="Format" tooltip="Choose how to format the query results">
           <RadioButtonGroup options={FORMAT_OPTIONS} value={format} onChange={onFormatChange} />
         </InlineField>
-        <div style={{ flex: 1 }} />
-        <button
-          type="button"
-          onClick={() => setOptionsOpen((v) => !v)}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '6px 12px',
-            background: optionsOpen ? 'rgba(255,136,51,0.12)' : 'transparent',
-            color: optionsOpen ? '#ff8833' : 'inherit',
-            border: `1px solid ${optionsOpen ? '#ff8833' : 'rgba(204, 204, 220, 0.15)'}`,
-            borderRadius: 3,
-            fontSize: 12,
-            cursor: 'pointer',
-            userSelect: 'none',
-            height: 30,
-          }}
-          aria-expanded={optionsOpen}
-        >
-          <span>Options</span>
-          {dirtyCount > 0 && (
-            <span
-              style={{
-                background: '#ff8833',
-                color: '#fff',
-                borderRadius: 9,
-                padding: '1px 7px',
-                fontSize: 10,
-                fontWeight: 600,
-                lineHeight: 1.4,
-              }}
-            >
-              {dirtyCount}
-            </span>
-          )}
-          <span style={{ fontSize: 10, transform: optionsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▾</span>
-        </button>
       </div>
-
-      {/* Inline expanded panel — shown only when Options toggle is open. */}
-      {optionsOpen && (
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '4px 16px',
-            alignItems: 'center',
-            padding: '8px 12px',
-            marginBottom: 8,
-            background: 'rgba(255,255,255,0.02)',
-            border: '1px dashed rgba(204, 204, 220, 0.15)',
-            borderRadius: 3,
-          }}
-        >
-          <InlineField
-            label="Splitting"
-            tooltip="Parallel time-range chunking for faster results. Applies to: time-bucketed ($__timeGroup) and raw queries. Auto-skipped for: GROUP BY, DISTINCT, COUNT/SUM/AVG without $__timeGroup, LIMIT, and no $__timeFilter."
-          >
-            <Select options={SPLIT_OPTIONS} value={split} onChange={onSplitChange} width={16} />
-          </InlineField>
-          <InlineField
-            label="Database"
-            tooltip="Override the default database for this query. Leave empty to use the datasource default."
-          >
-            <Input
-              value={query.database || ''}
-              onChange={onDatabaseChange}
-              onBlur={onDatabaseBlur}
-              placeholder="default"
-              width={16}
-            />
-          </InlineField>
-        </div>
-      )}
 
       <div style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
         <CodeEditor
@@ -282,6 +209,47 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           </div>
         </div>
       </div>
+
+      {/* Options — Loki-style Collapse below the editor. Plain panel colors,
+          inline summary of current values when collapsed, full-width expanded.
+          Pattern lifted from Grafana's own Prometheus/Loki QueryOptionGroup. */}
+      <Collapse
+        collapsible
+        isOpen={optionsOpen}
+        onToggle={setOptionsOpen}
+        label={
+          <span style={{ display: 'inline-flex', gap: 16, alignItems: 'center' }}>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>Options</span>
+            {!optionsOpen && (
+              <span style={{ display: 'inline-flex', gap: 16, fontSize: 12, color: '#9fa1a6', fontWeight: 'normal' }}>
+                <span>Splitting: <span style={{ color: '#ccccdc' }}>{labelFor(SPLIT_OPTIONS, split)}</span></span>
+                <span>Database: <span style={{ color: '#ccccdc' }}>{db || 'default'}</span></span>
+              </span>
+            )}
+          </span>
+        }
+      >
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', alignItems: 'center', paddingTop: 4 }}>
+          <InlineField
+            label="Splitting"
+            tooltip="Parallel time-range chunking for faster results. Applies to time-bucketed ($__timeGroup) and raw queries. Auto-skipped for: GROUP BY, DISTINCT, COUNT/SUM/AVG without $__timeGroup, LIMIT, and no $__timeFilter."
+          >
+            <Select options={SPLIT_OPTIONS} value={split} onChange={onSplitChange} width={16} />
+          </InlineField>
+          <InlineField
+            label="Database"
+            tooltip="Override the default database for this query. Leave empty to use the datasource default."
+          >
+            <Input
+              value={query.database || ''}
+              onChange={onDatabaseChange}
+              onBlur={onDatabaseBlur}
+              placeholder="default"
+              width={16}
+            />
+          </InlineField>
+        </div>
+      </Collapse>
     </div>
   );
 }
