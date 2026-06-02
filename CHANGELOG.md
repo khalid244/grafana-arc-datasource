@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-02
+
+### Added
+- Three-way **Rollups** mode selector (Auto / Rollup only / Off), replacing the on/off switch; per-mode detail moved to the field info icon. **Rollup only** forces cube serving and returns an error if no cube covers the query (`X-Arc-Rollup-Only` header); **Off** forces a full source scan (`X-Arc-No-Rollup`); **Auto** uses a cube when one covers, else source.
+
+### Changed
+- Redesigned the rollup status indicator into a single lifecycle-aware banner that shows the pre-run prediction (`Will roll up · <cube>`) and upgrades to the post-run result (`Rolled up · <cube> · <time>` / `Source · <time>`), reverting to a prediction the moment the SQL is edited.
+- Moved the QueryEditor and Variable query editor off hardcoded colors onto Grafana theme tokens and the spacing grid (now adapts to light/dark themes).
+- Polished the datasource config page: labels no longer wrap, toggles are vertically centered, the Arrow-protocol hint moved into its tooltip, numeric inputs can be cleared and re-typed without snapping back, and theme tokens for light/dark — merged and adapted from upstream (`4d80df6`).
+- Build: reproducible (`-trimpath`) and smaller binaries, dynamic plugin version read, and parallel cross-platform builds — Magefile from upstream (`18aca96`).
+
+### Fixed
+- The pre-run "will roll up" prediction now uses the query's actual `$__interval` (it previously fell back to a coarser server-side interval and over-predicted rollup), and a client-side guard prevents it from claiming a sub-hour query will roll up — the hourly cubes cannot serve buckets finer than 1h.
+- The `Source` provenance now shows after running with Rollups set to Off (it was hidden entirely in Off mode).
+
 ## [1.2.3] - 2026-05-19
 
 ### Fixed
