@@ -56,7 +56,7 @@ func formatRequestError(err error) error {
 }
 
 // QueryJSON executes a query using Arc's JSON endpoint (fallback)
-func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, timeRange backend.TimeRange) (*data.Frame, error) {
+func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, timeRange backend.TimeRange, rollupMode string) (*data.Frame, error) {
 	// Build request
 	url := fmt.Sprintf("%s/api/v1/query", settings.settings.URL)
 
@@ -82,6 +82,15 @@ func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, t
 	// Set database if specified
 	if settings.settings.Database != "" {
 		req.Header.Set("X-Arc-Database", settings.settings.Database)
+	}
+
+	// Rollup mode: off forces a source scan; only forces a strict cube read
+	// (no source fallback, errors if uncovered); auto sends neither header.
+	switch rollupMode {
+	case "off":
+		req.Header.Set("X-Arc-No-Rollup", "true")
+	case "only":
+		req.Header.Set("X-Arc-Rollup-Only", "true")
 	}
 
 	// Execute request
@@ -112,6 +121,13 @@ func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, t
 		"duration_ms", duration.Milliseconds(),
 	)
 
+	// Determine whether Arc served this query from a rollup cube or source scan.
+	cube := resp.Header.Get("X-Arc-Rollup-Cube")
+	servedBy := "source"
+	if cube != "" {
+		servedBy = "rollup"
+	}
+
 	// Convert to DataFrame
 	frame, err := JSONToDataFrame(result)
 	if err != nil {
@@ -123,6 +139,8 @@ func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, t
 		ExecutedQueryString: sql,
 		Custom: map[string]interface{}{
 			"executionTime": duration.Milliseconds(),
+			"servedBy":      servedBy,
+			"rollupCube":    cube,
 		},
 	}
 

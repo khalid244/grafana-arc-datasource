@@ -19,7 +19,7 @@ import (
 )
 
 // QueryArrow executes a query using Arc's Arrow endpoint
-func QueryArrow(ctx context.Context, settings *ArcInstanceSettings, sql string, timeRange backend.TimeRange) (*data.Frame, error) {
+func QueryArrow(ctx context.Context, settings *ArcInstanceSettings, sql string, timeRange backend.TimeRange, rollupMode string) (*data.Frame, error) {
 	// Build request
 	url := fmt.Sprintf("%s/api/v1/query/arrow", settings.settings.URL)
 
@@ -45,6 +45,15 @@ func QueryArrow(ctx context.Context, settings *ArcInstanceSettings, sql string, 
 	// Set database if specified
 	if settings.settings.Database != "" {
 		req.Header.Set("X-Arc-Database", settings.settings.Database)
+	}
+
+	// Rollup mode: off forces a source scan; only forces a strict cube read
+	// (no source fallback, errors if uncovered); auto sends neither header.
+	switch rollupMode {
+	case "off":
+		req.Header.Set("X-Arc-No-Rollup", "true")
+	case "only":
+		req.Header.Set("X-Arc-Rollup-Only", "true")
 	}
 
 	// Execute request
@@ -76,6 +85,13 @@ func QueryArrow(ctx context.Context, settings *ArcInstanceSettings, sql string, 
 		"bytes", len(arrowData),
 	)
 
+	// Determine whether Arc served this query from a rollup cube or source scan.
+	cube := resp.Header.Get("X-Arc-Rollup-Cube")
+	servedBy := "source"
+	if cube != "" {
+		servedBy = "rollup"
+	}
+
 	// Parse Arrow IPC stream
 	frame, err := ArrowToDataFrame(arrowData)
 	if err != nil {
@@ -87,6 +103,8 @@ func QueryArrow(ctx context.Context, settings *ArcInstanceSettings, sql string, 
 		ExecutedQueryString: sql,
 		Custom: map[string]interface{}{
 			"executionTime": duration.Milliseconds(),
+			"servedBy":      servedBy,
+			"rollupCube":    cube,
 		},
 	}
 

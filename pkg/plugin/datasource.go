@@ -33,6 +33,21 @@ type ArcQuery struct {
 	Format        string `json:"format"`         // "time_series" or "table"
 	MaxDataPoints int64  `json:"maxDataPoints"`
 	SplitDuration string `json:"splitDuration"`  // "auto" (default), "off", or explicit: "1h", "6h", "12h", "1d", "3d", "7d"
+	Rollup        *bool  `json:"rollup"`         // LEGACY (pre-rollupMode): nil/true = auto, false = off. Migrated below.
+	RollupMode    string `json:"rollupMode"`     // "auto" (default) | "only" (strict cube, error if uncovered) | "off" (force source)
+}
+
+// rollupMode resolves the effective rollup mode for a query, migrating the legacy
+// boolean Rollup field (false → "off") when the newer RollupMode is unset.
+func (q ArcQuery) rollupMode() string {
+	switch q.RollupMode {
+	case "off", "only", "auto":
+		return q.RollupMode
+	}
+	if q.Rollup != nil && !*q.Rollup {
+		return "off"
+	}
+	return "auto"
 }
 
 // ArcInstanceSettings holds per-instance settings
@@ -202,15 +217,15 @@ func splitTimeRange(from, to time.Time, chunkSize time.Duration) []backend.TimeR
 }
 
 // executeChunk runs a single query chunk against Arc
-func (d *ArcDatasource) executeChunk(ctx context.Context, settings *ArcInstanceSettings, rawSQL string, chunk backend.TimeRange, originalRange backend.TimeRange) (*data.Frame, error) {
+func (d *ArcDatasource) executeChunk(ctx context.Context, settings *ArcInstanceSettings, rawSQL string, chunk backend.TimeRange, originalRange backend.TimeRange, rollupMode string) (*data.Frame, error) {
 	// Apply macros with the chunk's time range for time filtering,
 	// but keep the original range for $__interval calculation
 	sql := ApplyMacrosWithSplit(rawSQL, chunk, originalRange)
 
 	if settings.settings.UseArrow {
-		return QueryArrowFlightSQLStyle(ctx, settings, sql, chunk)
+		return QueryArrowFlightSQLStyle(ctx, settings, sql, chunk, rollupMode)
 	}
-	return QueryJSON(ctx, settings, sql, chunk)
+	return QueryJSON(ctx, settings, sql, chunk, rollupMode)
 }
 
 // mergeFrames appends rows from all chunk frames into a single frame.
@@ -307,6 +322,9 @@ func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings
 		settings = &overridden
 	}
 
+	// Rollup is on by default; only force a full source scan when explicitly disabled.
+	rollupMode := qm.rollupMode()
+
 	// Check if query splitting is enabled
 	chunkSize, splitting := parseSplitDuration(qm.SplitDuration, query.TimeRange)
 
@@ -399,7 +417,7 @@ func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings
 			}
 			defer func() { <-semaphore }()
 
-			frame, err := d.executeChunk(ctx, settings, qm.SQL, ch, query.TimeRange)
+			frame, err := d.executeChunk(ctx, settings, qm.SQL, ch, query.TimeRange, rollupMode)
 			if err != nil {
 				err = fmt.Errorf("[chunk %s to %s] %w",
 					ch.From.Format("2006-01-02 15:04"),
@@ -429,11 +447,27 @@ func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings
 		return response
 	}
 
+	custom := map[string]interface{}{
+		"splitChunks": len(chunks),
+	}
+	// Carry the rollup/source provenance from the chunk frames. All chunks hit the
+	// same SQL, so they are served the same way; propagate the first chunk's keys.
+	for _, f := range orderedFrames {
+		if f != nil && f.Meta != nil && f.Meta.Custom != nil {
+			if c, ok := f.Meta.Custom.(map[string]interface{}); ok {
+				if v, ok := c["servedBy"]; ok {
+					custom["servedBy"] = v
+				}
+				if v, ok := c["rollupCube"]; ok {
+					custom["rollupCube"] = v
+				}
+				break
+			}
+		}
+	}
 	merged.Meta = &data.FrameMeta{
 		ExecutedQueryString: qm.SQL,
-		Custom: map[string]interface{}{
-			"splitChunks": len(chunks),
-		},
+		Custom:              custom,
 	}
 
 	// Prepare frames (long-to-wide conversion, etc.)
@@ -472,14 +506,17 @@ func (d *ArcDatasource) querySingle(ctx context.Context, settings *ArcInstanceSe
 		"useArrow", settings.settings.UseArrow,
 	)
 
+	// Rollup is on by default; only force a full source scan when explicitly disabled.
+	rollupMode := qm.rollupMode()
+
 	// Execute query based on protocol
 	var frame *data.Frame
 	var err error
 
 	if settings.settings.UseArrow {
-		frame, err = QueryArrowFlightSQLStyle(ctx, settings, sql, query.TimeRange)
+		frame, err = QueryArrowFlightSQLStyle(ctx, settings, sql, query.TimeRange, rollupMode)
 	} else {
-		frame, err = QueryJSON(ctx, settings, sql, query.TimeRange)
+		frame, err = QueryJSON(ctx, settings, sql, query.TimeRange, rollupMode)
 	}
 
 	if err != nil {
@@ -528,7 +565,7 @@ func (d *ArcDatasource) CheckHealth(ctx context.Context, req *backend.CheckHealt
 	_, err = QueryArrow(ctx, settings, testSQL, backend.TimeRange{
 		From: time.Now().Add(-1 * time.Hour),
 		To:   time.Now(),
-	})
+	}, "auto")
 
 	if err != nil {
 		status = backend.HealthStatusError
@@ -801,9 +838,57 @@ func (d *ArcDatasource) CallResource(ctx context.Context, req *backend.CallResou
 		return d.handleTables(ctx, req, settings, sender)
 	case "columns":
 		return d.handleColumns(ctx, req, settings, sender)
+	case "rollup-explain":
+		return d.handleRollupExplain(ctx, req, settings, sender)
 	default:
 		return sender.Send(&backend.CallResourceResponse{Status: http.StatusNotFound, Body: []byte(`{"error":"not found"}`)})
 	}
+}
+
+// handleRollupExplain answers the editor's pre-run "will this roll up?" check. It
+// expands Grafana macros for the panel's current time range — so $__interval and
+// $__timeFilter match what the real query will send — then asks arc's
+// non-executing explain endpoint and relays {supported, cube, reason}. The range
+// matters: the same query rolls up at 30d (hourly bucket) but not at 6h (sub-hour).
+func (d *ArcDatasource) handleRollupExplain(ctx context.Context, req *backend.CallResourceRequest, settings *ArcInstanceSettings, sender backend.CallResourceResponseSender) error {
+	send := func(body string) error {
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusOK,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte(body),
+		})
+	}
+	var body struct {
+		SQL  string `json:"sql"`
+		From int64  `json:"from"` // epoch ms
+		To   int64  `json:"to"`   // epoch ms
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil || strings.TrimSpace(body.SQL) == "" {
+		return send(`{"supported":false,"reason":"empty query"}`)
+	}
+	expanded := ApplyMacros(body.SQL, backend.TimeRange{From: time.UnixMilli(body.From), To: time.UnixMilli(body.To)})
+
+	payload, _ := json.Marshal(map[string]string{"sql": expanded})
+	hreq, err := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/api/v1/query/explain", settings.settings.URL), strings.NewReader(string(payload)))
+	if err != nil {
+		return send(`{"supported":false,"reason":"could not build request"}`)
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	hreq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", settings.apiKey))
+	if settings.settings.Database != "" {
+		hreq.Header.Set("X-Arc-Database", settings.settings.Database)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(hreq)
+	if err != nil {
+		return send(`{"supported":false,"reason":"arc unreachable for rollup check"}`)
+	}
+	defer resp.Body.Close()
+	var out json.RawMessage
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return send(`{"supported":false,"reason":"unexpected explain response"}`)
+	}
+	return send(string(out))
 }
 
 func (d *ArcDatasource) handleTables(ctx context.Context, req *backend.CallResourceRequest, settings *ArcInstanceSettings, sender backend.CallResourceResponseSender) error {
@@ -833,7 +918,7 @@ func (d *ArcDatasource) handleTables(ctx context.Context, req *backend.CallResou
 	}
 
 	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
-	frame, err := QueryJSON(ctx, settings, "SHOW TABLES", dummyRange)
+	frame, err := QueryJSON(ctx, settings, "SHOW TABLES", dummyRange, "auto")
 	if err != nil {
 		body, _ := json.Marshal([]tableEntry{})
 		return sender.Send(&backend.CallResourceResponse{
@@ -903,7 +988,7 @@ func (d *ArcDatasource) handleColumns(ctx context.Context, req *backend.CallReso
 
 	sql := fmt.Sprintf("DESCRIBE %s", table)
 	dummyRange := backend.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
-	frame, err := QueryJSON(ctx, settings, sql, dummyRange)
+	frame, err := QueryJSON(ctx, settings, sql, dummyRange, "auto")
 	if err != nil {
 		// Table may not exist — return empty array instead of error
 		body, _ := json.Marshal([]columnEntry{})

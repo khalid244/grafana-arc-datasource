@@ -28,6 +28,8 @@ export interface ArcQuery extends DataQuery {
   rawSql?: string; // Postgres/MySQL/MSSQL/ClickHouse compatibility
   splitDuration?: string; // "off", "1h", "6h", "12h", "1d", "3d", "7d"
   database?: string; // Per-query database override (empty = use datasource default)
+  rollup?: boolean; // LEGACY (pre-rollupMode): undefined/true = auto, false = off. Migrated to rollupMode.
+  rollupMode?: 'auto' | 'only' | 'off'; // auto = cube when covered else source; only = strict cube (error if uncovered); off = force source
 }
 
 /**
