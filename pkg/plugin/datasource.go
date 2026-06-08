@@ -19,22 +19,52 @@ import (
 type ArcDataSourceSettings struct {
 	URL            string `json:"url"`
 	Database       string `json:"database"`
-	Timeout        int    `json:"timeout"`        // seconds
+	Timeout        int    `json:"timeout"` // seconds
 	UseArrow       bool   `json:"useArrow"`
 	MaxConcurrency int    `json:"maxConcurrency"` // max parallel chunks for query splitting (default 4)
 }
 
 // ArcQuery represents a query to Arc
 type ArcQuery struct {
-	RefID         string `json:"refId"`
-	SQL           string `json:"sql"`
-	RawSQL        string `json:"rawSql"`        // Postgres/MySQL/MSSQL/ClickHouse compatibility
-	Database      string `json:"database"`       // Per-query database override (empty = use datasource default)
-	Format        string `json:"format"`         // "time_series" or "table"
-	MaxDataPoints int64  `json:"maxDataPoints"`
-	SplitDuration string `json:"splitDuration"`  // "auto" (default), "off", or explicit: "1h", "6h", "12h", "1d", "3d", "7d"
-	Rollup        *bool  `json:"rollup"`         // LEGACY (pre-rollupMode): nil/true = auto, false = off. Migrated below.
-	RollupMode    string `json:"rollupMode"`     // "auto" (default) | "only" (strict cube, error if uncovered) | "off" (force source)
+	RefID         string  `json:"refId"`
+	SQL           string  `json:"sql"`
+	RawSQL        string  `json:"rawSql"`   // Postgres/MySQL/MSSQL/ClickHouse compatibility
+	Database      string  `json:"database"` // Per-query database override (empty = use datasource default)
+	Format        string  `json:"format"`   // "time_series" or "table"
+	MaxDataPoints int64   `json:"maxDataPoints"`
+	SplitDuration string  `json:"splitDuration"` // "auto" (default), "off", or explicit: "1h", "6h", "12h", "1d", "3d", "7d"
+	Rollup        optBool `json:"rollup"`        // LEGACY (pre-rollupMode): unset/true = auto, false = off. Migrated below.
+	RollupMode    string  `json:"rollupMode"`    // "auto" (default) | "only" (strict cube, error if uncovered) | "off" (force source)
+}
+
+// optBool tolerantly decodes the legacy `rollup` hint. Persisted/legacy
+// dashboards — and alert/report/public-dashboard payloads that bypass frontend
+// query migration — sometimes store `rollup` as a JSON STRING ("true"/"false")
+// rather than a bool. `rollup` is only an optimization hint, so a value we can't
+// interpret must degrade to "unset" (→ auto/source), never fail the whole query.
+type optBool struct{ v *bool }
+
+func (o *optBool) UnmarshalJSON(b []byte) error {
+	// Native bool: {"rollup": false}
+	var bv bool
+	if err := json.Unmarshal(b, &bv); err == nil {
+		o.v = &bv
+		return nil
+	}
+	// Stringified bool from older dashboards: {"rollup": "false"}
+	var sv string
+	if err := json.Unmarshal(b, &sv); err == nil {
+		switch strings.ToLower(strings.TrimSpace(sv)) {
+		case "true", "1", "on", "yes":
+			t := true
+			o.v = &t
+		case "false", "0", "off", "no":
+			f := false
+			o.v = &f
+		}
+		return nil // unknown/empty string → leave unset (auto)
+	}
+	return nil // null / number / object / garbage → leave unset, never error
 }
 
 // rollupMode resolves the effective rollup mode for a query, migrating the legacy
@@ -44,7 +74,7 @@ func (q ArcQuery) rollupMode() string {
 	case "off", "only", "auto":
 		return q.RollupMode
 	}
-	if q.Rollup != nil && !*q.Rollup {
+	if q.Rollup.v != nil && !*q.Rollup.v {
 		return "off"
 	}
 	return "auto"
@@ -172,7 +202,9 @@ func parseSplitDuration(s string, tr backend.TimeRange) (time.Duration, bool) {
 // Alignment ensures common aggregation intervals (1h, 10m, etc.) never span a
 // chunk boundary, which would produce incorrect partial aggregations.
 // Example with 6h chunks, range 14:30–02:30:
-//   [14:30, 18:00), [18:00, 00:00), [00:00, 02:30)
+//
+//	[14:30, 18:00), [18:00, 00:00), [00:00, 02:30)
+//
 // All internal boundaries land on 6h multiples from epoch.
 func splitTimeRange(from, to time.Time, chunkSize time.Duration) []backend.TimeRange {
 	// Truncates to whole seconds — sub-second chunk sizes are not supported,
@@ -732,7 +764,7 @@ func ensureAscendingTimes(frame *data.Frame, timeIdx int) *data.Frame {
 
 // stripStringLiterals removes content inside single-quoted string literals
 // so that keyword detection doesn't false-positive on values like 'THE LIMIT 10'.
-// Handles escaped quotes ('') inside literals.
+// Handles escaped quotes (”) inside literals.
 func stripStringLiterals(sql string) string {
 	var result strings.Builder
 	inQuote := false
@@ -941,9 +973,9 @@ func (d *ArcDatasource) handleTables(ctx context.Context, req *backend.CallResou
 
 	body, _ := json.Marshal(tables)
 	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
+		Status:  http.StatusOK,
 		Headers: map[string][]string{"Content-Type": {"application/json"}},
-		Body:   body,
+		Body:    body,
 	})
 }
 
@@ -1014,9 +1046,9 @@ func (d *ArcDatasource) handleColumns(ctx context.Context, req *backend.CallReso
 
 	body, _ := json.Marshal(columns)
 	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
+		Status:  http.StatusOK,
 		Headers: map[string][]string{"Content-Type": {"application/json"}},
-		Body:   body,
+		Body:    body,
 	})
 }
 

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,86 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
+
+// --- ArcQuery.rollup tolerant parsing ---
+//
+// Legacy/persisted dashboards (and alert/report/public-dashboard payloads that
+// bypass frontend query migration) sometimes store `rollup` as a JSON STRING
+// ("true"/"false") rather than a bool. The `rollup` field is only an
+// optimization hint, so a malformed value must degrade to auto/source — never
+// fail the whole query at unmarshal time (which short-circuits before the
+// rollup→source decision and breaks the panel/alert entirely).
+
+func TestArcQueryRollup_StringFalse_ParsesAsOff(t *testing.T) {
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"rollup":"false"}`), &q); err != nil {
+		t.Fatalf("string rollup must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "off" {
+		t.Errorf(`rollup="false" → mode=%q, want "off"`, got)
+	}
+}
+
+func TestArcQueryRollup_StringTrue_ParsesAsAuto(t *testing.T) {
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"rollup":"true"}`), &q); err != nil {
+		t.Fatalf("string rollup must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "auto" {
+		t.Errorf(`rollup="true" → mode=%q, want "auto"`, got)
+	}
+}
+
+func TestArcQueryRollup_BoolFalse_ParsesAsOff(t *testing.T) {
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"rollup":false}`), &q); err != nil {
+		t.Fatalf("bool rollup must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "off" {
+		t.Errorf("rollup=false → mode=%q, want \"off\"", got)
+	}
+}
+
+func TestArcQueryRollup_BoolTrue_ParsesAsAuto(t *testing.T) {
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"rollup":true}`), &q); err != nil {
+		t.Fatalf("bool rollup must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "auto" {
+		t.Errorf("rollup=true → mode=%q, want \"auto\"", got)
+	}
+}
+
+func TestArcQueryRollup_Garbage_FallsBackToAuto(t *testing.T) {
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"rollup":"maybe"}`), &q); err != nil {
+		t.Fatalf("garbage rollup must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "auto" {
+		t.Errorf(`rollup="maybe" → mode=%q, want "auto"`, got)
+	}
+}
+
+func TestArcQueryRollup_Absent_ParsesAsAuto(t *testing.T) {
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"sql":"SELECT 1"}`), &q); err != nil {
+		t.Fatalf("absent rollup must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "auto" {
+		t.Errorf("absent rollup → mode=%q, want \"auto\"", got)
+	}
+}
+
+func TestArcQueryRollup_ModeOverridesLegacyString(t *testing.T) {
+	// Explicit rollupMode wins over the legacy string rollup field.
+	var q ArcQuery
+	if err := json.Unmarshal([]byte(`{"rollup":"false","rollupMode":"only"}`), &q); err != nil {
+		t.Fatalf("must not fail unmarshal: %v", err)
+	}
+	if got := q.rollupMode(); got != "only" {
+		t.Errorf(`rollupMode=only → %q, want "only"`, got)
+	}
+}
 
 // --- autoSplitDuration ---
 
@@ -408,11 +489,11 @@ func TestContainsLIMIT(t *testing.T) {
 		{"SELECT * FROM t Limit 10", true},
 		{"SELECT * FROM t WHERE x > 1", false},
 		{"SELECT * FROM t ORDER BY time", false},
-		{"SELECT limited FROM t", false},                            // "limited" is not " LIMIT "
-		{"SELECT * FROM t WHERE name = 'THE LIMIT 10'", false},      // LIMIT inside string literal
+		{"SELECT limited FROM t", false},                                // "limited" is not " LIMIT "
+		{"SELECT * FROM t WHERE name = 'THE LIMIT 10'", false},          // LIMIT inside string literal
 		{"SELECT * FROM t WHERE desc = 'NO LIMIT ' ORDER BY id", false}, // LIMIT inside string literal with trailing space
-		{"SELECT *\nFROM t\nORDER BY time DESC\nLIMIT 200", true},         // LIMIT preceded by newline
-		{"SELECT *\n\tFROM t\n\tLIMIT 10", true},                          // LIMIT preceded by newline+tab
+		{"SELECT *\nFROM t\nORDER BY time DESC\nLIMIT 200", true},       // LIMIT preceded by newline
+		{"SELECT *\n\tFROM t\n\tLIMIT 10", true},                        // LIMIT preceded by newline+tab
 	}
 	for _, c := range cases {
 		result := containsLIMIT(c.sql)
@@ -613,10 +694,10 @@ func TestApplyMacros_Interval(t *testing.T) {
 		hours    int
 		expected string
 	}{
-		{2, "10 seconds"},    // < 6h
-		{12, "1 minute"},     // > 6h, < 24h
-		{48, "10 minutes"},   // > 24h, < 7d
-		{200, "1 hour"},      // > 7d
+		{2, "10 seconds"},  // < 6h
+		{12, "1 minute"},   // > 6h, < 24h
+		{48, "10 minutes"}, // > 24h, < 7d
+		{200, "1 hour"},    // > 7d
 	}
 	for _, c := range cases {
 		tr := backend.TimeRange{
@@ -661,4 +742,3 @@ func expect(t *testing.T, got, want time.Time, label string) {
 		t.Errorf("%s: expected %v, got %v", label, want, got)
 	}
 }
-

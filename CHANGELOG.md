@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-06-08
+
+### Fixed
+- **Rollup hint sent as a JSON string no longer fails the whole query.** Legacy/persisted dashboards — and alert/report/public-dashboard payloads that bypass frontend query migration — could store the legacy `rollup` field as a string (`"true"`/`"false"`) instead of a bool. The backend rejected it at unmarshal time (`failed to unmarshal query: json: cannot unmarshal string into Go struct field ArcQuery.rollup of type bool`), which short-circuited before the rollup→source decision and broke the panel/alert entirely instead of falling back to source. The `rollup` field now tolerantly decodes bool, stringified bool, or unparseable values (the latter degrade to `auto`), since a malformed optimization hint must never fail a query.
+
 ## [1.3.0] - 2026-06-02
 
 ### Added
