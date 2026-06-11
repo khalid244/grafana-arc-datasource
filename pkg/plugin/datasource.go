@@ -332,38 +332,17 @@ func mergeFrames(frames []*data.Frame) *data.Frame {
 	return merged
 }
 
-// toInt64 coerces a meta value to int64 milliseconds. The query paths write
-// executionTime as int64 (duration.Milliseconds()); float64 is tolerated in case
-// a value ever round-trips through JSON. Anything else (missing/nil/other type)
-// returns ok=false so the caller can skip it.
-func toInt64(v interface{}) (int64, bool) {
-	switch n := v.(type) {
-	case int64:
-		return n, true
-	case int:
-		return int64(n), true
-	case float64:
-		return int64(n), true
-	default:
-		return 0, false
-	}
-}
-
 // mergeChunkMeta builds the merged frame's Custom meta from the per-chunk frames
 // produced by a split query. It keeps the same shape the non-split path uses (see
-// QueryArrow in arrow.go): servedBy/rollupCube provenance plus an executionTime
-// (int64 ms) the editor status chip renders. All chunks hit the same SQL so they
-// share provenance — the first chunk's servedBy/rollupCube wins. executionTime is
-// the SUM of all chunks' per-chunk durations (total backend work; chunks run
-// concurrently so this is not wall-clock). Chunks lacking executionTime are
-// tolerated, and the key is omitted entirely when no chunk reported one.
+// QueryArrow in arrow.go): servedBy/rollupCube provenance. All chunks hit the same
+// SQL so they share provenance — the first chunk's servedBy/rollupCube wins.
+// executionTime is NOT merged here: chunks run concurrently, so any combination of
+// their per-chunk durations misrepresents what the user actually waited — query()
+// stamps the end-to-end wall clock over whatever this returns.
 func mergeChunkMeta(frames []*data.Frame, numChunks int) map[string]interface{} {
 	custom := map[string]interface{}{
 		"splitChunks": numChunks,
 	}
-	provenanceSet := false
-	var totalExecMs int64
-	haveExec := false
 	for _, f := range frames {
 		if f == nil || f.Meta == nil || f.Meta.Custom == nil {
 			continue
@@ -372,28 +351,55 @@ func mergeChunkMeta(frames []*data.Frame, numChunks int) map[string]interface{} 
 		if !ok {
 			continue
 		}
-		if !provenanceSet {
-			if v, ok := c["servedBy"]; ok {
-				custom["servedBy"] = v
-			}
-			if v, ok := c["rollupCube"]; ok {
-				custom["rollupCube"] = v
-			}
-			provenanceSet = true
+		// First chunk that actually REPORTS provenance wins — a chunk with an
+		// empty/typed-nil custom map must not eat the provenance of later chunks.
+		v, ok := c["servedBy"]
+		if !ok {
+			continue
 		}
-		if ms, ok := toInt64(c["executionTime"]); ok {
-			totalExecMs += ms
-			haveExec = true
+		custom["servedBy"] = v
+		if rc, ok := c["rollupCube"]; ok {
+			custom["rollupCube"] = rc
 		}
-	}
-	if haveExec {
-		custom["executionTime"] = totalExecMs
+		break
 	}
 	return custom
 }
 
-// query executes a single query, with optional time-range splitting for large ranges
+// stampExecutionTime overwrites every frame's meta executionTime with the
+// END-TO-END wall clock of the datasource query: plugin received it -> frames
+// ready, covering Arc round-trips, chunk fan-out, merge, and long-to-wide
+// conversion. Deliberately NOT Arc's self-reported per-query time (excludes
+// network/merge) nor a sum over parallel chunks (reads several times larger than
+// the actual wait) — the status chip answers "how long did my query take".
+func stampExecutionTime(frames data.Frames, elapsed time.Duration) {
+	for _, f := range frames {
+		if f == nil {
+			continue
+		}
+		if f.Meta == nil {
+			f.Meta = &data.FrameMeta{}
+		}
+		c, ok := f.Meta.Custom.(map[string]interface{})
+		if !ok || c == nil {
+			c = map[string]interface{}{}
+			f.Meta.Custom = c
+		}
+		c["executionTime"] = elapsed.Milliseconds()
+	}
+}
+
+// query times queryInner end-to-end and stamps the wall clock onto the returned
+// frames' meta (see stampExecutionTime for why it overrides per-chunk values).
 func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings, query backend.DataQuery) backend.DataResponse {
+	startedAt := time.Now()
+	response := d.queryInner(ctx, settings, query)
+	stampExecutionTime(response.Frames, time.Since(startedAt))
+	return response
+}
+
+// queryInner executes a single query, with optional time-range splitting for large ranges
+func (d *ArcDatasource) queryInner(ctx context.Context, settings *ArcInstanceSettings, query backend.DataQuery) backend.DataResponse {
 	var response backend.DataResponse
 
 	// Parse query model

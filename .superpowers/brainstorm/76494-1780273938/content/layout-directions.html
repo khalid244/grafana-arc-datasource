@@ -1,0 +1,80 @@
+<style>
+  .wire { font: 12px/1.4 ui-monospace, SFMono-Regular, monospace; color: #c7c9cf; }
+  .wire .box { border: 1px solid rgba(255,255,255,0.18); border-radius: 3px; padding: 6px 8px; margin: 6px 0; background: rgba(255,255,255,0.03); }
+  .wire .editor { min-height: 54px; color: #8a8d94; }
+  .wire .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .wire .chip { border: 1px solid rgba(255,255,255,0.22); border-radius: 3px; padding: 2px 8px; font-size: 11px; background: rgba(255,255,255,0.05); }
+  .wire .muted { color: #8a8d94; }
+  .wire .pill-g { color:#6ccf8e; border:1px solid rgba(108,207,142,0.45); background:rgba(108,207,142,0.12); border-radius:3px; padding:2px 8px; font-size:11px; }
+  .wire .pill-a { color:#e6b35a; border:1px solid rgba(230,179,90,0.45); background:rgba(230,179,90,0.12); border-radius:3px; padding:2px 8px; font-size:11px; }
+  .wire .right { margin-left: auto; }
+  .badgehint { color:#8a8d94; font-size: 12px; margin-top: 4px; }
+  .legend { font-size:12px; color:#8a8d94; }
+</style>
+
+<h2>How should the Query Editor's UX evolve?</h2>
+<p class="subtitle">Three directions for the SQL editor + its controls (Format, Database, Splitting, Rollups) and the rollup status pills. Click the one whose direction you like — or mix &amp; match in the terminal.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Today — baseline (what's there now)</div>
+  <div class="mockup-body wire">
+    <div class="toolbar"><span class="muted">Format</span> <span class="chip">●Time series</span> <span class="chip">Table</span></div>
+    <div class="box editor">SELECT $__timeGroup(time,'$__interval'), site, AVG(value)<br>FROM downloads WHERE $__timeFilter(time) GROUP BY 1,2</div>
+    <div><span class="pill-g">✓ Will roll up · by_site</span><span class="pill-g">⚡ Rollup · 3.70s</span> <span class="muted">← two pills, no gap, both fire after a run</span></div>
+    <div class="box" style="margin-top:6px"><span class="muted">▸ Options&nbsp;&nbsp;&nbsp; Splitting: Auto&nbsp;&nbsp; Database: default&nbsp;&nbsp; Rollups: On</span></div>
+    <div class="muted" style="margin-top:4px;font-size:11px">Macros: $__timeFilter(col) $__timeFrom() $__timeTo() $__interval $__timeGroup(col,interval) — Cmd/Ctrl+Enter to run</div>
+  </div>
+  <div class="legend" style="padding:6px 10px">Pain points: Format sits alone up top while the other controls are hidden in a collapsed bar at the bottom; two separate rollup pills stack with no breathing room; the macros help is verbose and always on; colors are hardcoded (not theme-aware → washes out in light mode).</div>
+</div>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="wire" style="width:100%; padding:10px 12px;">
+        <div class="box toolbar" style="margin-top:0">
+          <span class="chip">Format ▾</span><span class="chip">DB: default ▾</span><span class="chip">Split: Auto ▾</span><span class="chip">⚡ Rollups ⦿</span>
+          <span class="chip right">? Macros</span>
+        </div>
+        <div class="box editor">SELECT $__timeGroup(time,'$__interval'), site, AVG(value) …</div>
+        <div><span class="pill-g">✓ Will roll up · by_site &nbsp;→&nbsp; ⚡ 3.70s</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A · Unified toolbar</h3>
+      <p>All controls in one compact toolbar above the editor. <b>One adaptive status line</b> that morphs from the pre-run prediction into the post-run result. Macros help moves behind a <code>?</code> popover. Best for density &amp; a single scan line.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="wire" style="width:100%; padding:10px 12px;">
+        <div class="box editor" style="margin-top:0">SELECT $__timeGroup(time,'$__interval'), site, AVG(value) …</div>
+        <div class="box toolbar">
+          <span class="chip">Format</span><span class="chip">Database</span><span class="chip">Splitting</span><span class="chip">Use rollups ⦿</span>
+        </div>
+        <div class="badgehint"><span class="pill-g">Rolled up · by_site · 3.70s</span> &nbsp;<span class="muted">ⓘ Macros</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · Grafana-native</h3>
+      <p>Rebuild on Grafana's own <code>EditorRows/EditorField</code> + <code>Badge</code> components. <b>Theme-tokened</b> (correct in light &amp; dark), native status Badge, help as an <code>ⓘ</code> icon. Most idiomatic &amp; lowest long-term maintenance; controls sit under the editor like other Grafana datasources.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="wire" style="width:100%; padding:10px 12px;">
+        <div class="box editor" style="margin-top:0; min-height:72px">SELECT $__timeGroup(time,'$__interval'), site, AVG(value)<br>FROM downloads WHERE $__timeFilter(time) GROUP BY 1,2</div>
+        <div class="toolbar"><span class="pill-g">⚡ Rolled up · by_site · 3.70s</span><span class="chip right">▸ Options</span><span class="chip">ⓘ</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · Minimal / editor-first</h3>
+      <p>Maximize the editor. Everything secondary collapses into <b>one slim bottom bar</b>: live rollup status on the left, an <code>Options</code> disclosure + help on the right. Fewest pixels spent on chrome; controls one click away.</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="legend" style="margin-top:14px">All three keep the existing behavior (Cmd+Enter to run, autocomplete, resize, source-fallback). The difference is layout, grouping, and how the rollup status reads. Pick a direction and I'll detail it; theming/accessibility fixes come with whichever you choose.</p>

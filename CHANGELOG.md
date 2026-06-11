@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-06-11
+
+### Changed
+- **The status chip's execution time is now the end-to-end wall clock of the query** — from the moment the plugin receives it to frames ready, covering Arc round-trips, chunk fan-out, merge, and long-to-wide conversion. Previously the value was Arc's self-reported per-query time (single queries) or the **sum** of per-chunk durations (split queries) — chunks run concurrently, so the sum read several times larger than the actual wait (e.g. "7s" on a query that landed in under 2s). `mergeChunkMeta` no longer aggregates `executionTime`; a single `stampExecutionTime` pass owns the value for both split and non-split paths. Provenance merging is also more robust: the first chunk that actually *reports* `servedBy` wins, instead of the first chunk that merely has a custom meta map.
+
 ## [1.3.3] - 2026-06-11
 
 ### Fixed
@@ -116,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backend-only credential access
 - HTTPS support
 
-[Unreleased]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.4...HEAD
+[1.3.4]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.0...v1.3.1

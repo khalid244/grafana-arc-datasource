@@ -1,0 +1,98 @@
+<style>
+  .wire { font: 12px/1.45 ui-monospace, SFMono-Regular, monospace; color: #c7c9cf; }
+  .wire .box { border: 1px solid rgba(255,255,255,0.18); border-radius: 3px; padding: 6px 8px; margin: 6px 0; background: rgba(255,255,255,0.03); }
+  .wire .editor { min-height: 48px; color: #8a8d94; }
+  .wire .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .wire .chip { border:1px solid rgba(255,255,255,0.22); border-radius:3px; padding:2px 8px; font-size:11px; background:rgba(255,255,255,0.05); }
+  .wire .muted { color:#8a8d94; }
+  .b-green { color:#6ccf8e; border:1px solid rgba(108,207,142,0.5); background:rgba(108,207,142,0.13); border-radius:10px; padding:2px 9px; font-size:11px; font-weight:600; }
+  .b-amber { color:#e6b35a; border:1px solid rgba(230,179,90,0.5); background:rgba(230,179,90,0.13); border-radius:10px; padding:2px 9px; font-size:11px; font-weight:600; }
+  .b-neutral { color:#9fa1a6; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.05); border-radius:10px; padding:2px 9px; font-size:11px; }
+  .tip { border:1px solid rgba(255,255,255,0.16); background:#1c1d22; border-radius:4px; padding:6px 8px; font-size:11px; color:#b9bbc1; max-width:340px; }
+  .reason { border-left:2px solid rgba(230,179,90,0.6); background:rgba(230,179,90,0.06); padding:5px 9px; font-size:11px; color:#d6c39a; margin-top:5px; border-radius:0 3px 3px 0; }
+  .fix { color:#8fd0a6; }
+  .squiggle { text-decoration: underline wavy #e6b35a; text-underline-offset: 3px; }
+  .legend { font-size:12px; color:#8a8d94; }
+  .stategrid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:6px; }
+  .statecell { border:1px solid rgba(255,255,255,0.12); border-radius:4px; padding:8px; }
+  .statecell .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#75777e; margin-bottom:6px; }
+</style>
+
+<h2>B · How the user knows a query is rollup-able</h2>
+<p class="subtitle">A <b>live eligibility badge</b> sits under the editor and updates as you type (debounced, via the real router's <code>explainRollup</code>) — so you know <i>before</i> running. After a run, the same spot shows what actually happened. The open question is how much "why not / how to fix" to show. Pick a depth below.</p>
+
+<div class="mockup">
+  <div class="mockup-header">The badge's states (same component, native Grafana Badge)</div>
+  <div class="mockup-body wire">
+    <div class="stategrid">
+      <div class="statecell">
+        <div class="lbl">While editing · eligible</div>
+        <span class="b-green">✓ Will roll up · by_site</span>
+        <div class="tip" style="margin-top:6px">Cube <b>default.downloads.by_site</b> · grain hour ≤ your day · dims {site} covered · sketches n/a</div>
+      </div>
+      <div class="statecell">
+        <div class="lbl">While editing · not eligible</div>
+        <span class="b-amber">⚠ Won't roll up</span>
+        <div class="muted" style="margin-top:6px">+ a reason (see options below)</div>
+      </div>
+      <div class="statecell">
+        <div class="lbl">Checking / debouncing</div>
+        <span class="b-neutral">◴ Checking rollup…</span>
+      </div>
+      <div class="statecell">
+        <div class="lbl">Toggle off · or after a run</div>
+        <span class="b-neutral">Rollups off</span>&nbsp; <span class="b-green">⚡ Rolled up · by_site · 3.70s</span>&nbsp; <span class="b-neutral">Source · 6.42s</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:18px">When it <b>won't</b> roll up — how loudly do we explain why?</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="b1" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="wire" style="width:100%;padding:10px 12px">
+        <div class="box editor" style="margin-top:0">… ORDER BY AVG(value) DESC LIMIT 10</div>
+        <div class="row"><span class="b-amber">⚠ Won't roll up</span> <span class="muted">↰ hover</span></div>
+        <div class="tip" style="margin-top:6px">TopN ordering can't be reproduced from the cube → source scan.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B1 · Badge + tooltip</h3>
+      <p>Reason lives in the badge's hover tooltip. Closest to today, smallest footprint. <b>Downside:</b> the "why" is hidden until you hover — easy to miss, poor for teaching.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b2" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="wire" style="width:100%;padding:10px 12px">
+        <div class="box editor" style="margin-top:0">… ORDER BY AVG(value) DESC LIMIT 10</div>
+        <div class="row"><span class="b-amber">⚠ Won't roll up</span></div>
+        <div class="reason">TopN ordering can't be mapped onto the cube — falls back to a source scan.<br><span class="fix">Fix: order by a stored aggregate (count/sum/avg) or remove LIMIT to roll up.</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B2 · Badge + inline reason &amp; fix <span class="b-green" style="font-weight:600">recommended</span></h3>
+      <p>Badge always visible; when not eligible, a one-line reason + <b>actionable fix</b> appears right under it. Discoverable, teaches users to write rollup-friendly SQL. Collapses to nothing when eligible.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b3" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="wire" style="width:100%;padding:10px 12px">
+        <div class="box editor" style="margin-top:0">SELECT site, AVG(value) FROM downloads<br>WHERE … GROUP BY site <span class="squiggle">HAVING AVG(value) &gt; 5</span></div>
+        <div class="row"><span class="b-amber">⚠ Won't roll up</span></div>
+        <div class="reason">The underlined <b>HAVING</b> clause isn't supported by rollup.<br><span class="fix">Fix: filter in the panel or drop HAVING.</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B3 · Inline editor diagnostics</h3>
+      <p>Everything in B2 <b>plus</b> an amber squiggle on the exact clause that breaks rollup (Monaco marker), hover for the reason — a true "rollup linter." Most powerful &amp; teaching, but more work and needs the backend to return the offending span.</p>
+    </div>
+  </div>
+
+</div>
+
+<p class="legend" style="margin-top:14px">My recommendation: ship <b>B2</b> (always-visible badge + inline reason/fix) as the core, and treat <b>B3</b> (inline squiggles) as an optional phase-2 enhancement layered on top. B1 alone is too quiet for something this useful. Click a card, or tell me your call in the terminal.</p>
