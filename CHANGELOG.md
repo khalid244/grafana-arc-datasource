@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-06-11
+
+### Fixed
+- **Split queries now report an execution time in the editor status chip.** When a long time range is split into parallel chunks, the merge step rebuilt the frame's `custom` meta but copied only `servedBy`/`rollupCube` — `executionTime` was dropped, so the chip showed `Source —` with no duration. The merge now carries `executionTime` as the **sum** of every chunk's per-chunk duration (total backend work, int64 ms — chunks run concurrently so this is not wall-clock), keeping the same meta shape as the non-split path so the frontend renders it identically. Chunks that lack the field are tolerated, and the key is omitted entirely when no chunk reported one.
+- **Legacy panels saved with `rollup: "off"` (string) no longer display "Auto" in the editor.** The backend already decodes the legacy `rollup` hint tolerantly (string `"off"`/`"false"` → off), so such panels *executed* with rollups off but the editor's strict boolean check (`rollup === false`) showed "Auto" — a mismatch between what ran and what was displayed. `effectiveRollupMode` now mirrors the backend decode: `rollupMode` wins when present, else a `rollup` of boolean `false` or the strings `'off'`/`'false'` (case-insensitive) resolves to "Off". The same tolerant decode also gates the pre-run rollup-explain call, so a string-`"off"` panel skips the check too.
+- **The rollup hint chip no longer mispredicts when rollups are off.** With the effective mode resolved to off, the editor now skips the `rollup-explain` call and shows a neutral "Rollup disabled for this query" chip instead of a misleading "Will roll up …" prediction (or no chip at all). A fresh post-run result still wins, so a query run with rollups off continues to show `Source · <time>`.
+
+### Added
+- Backend tests for the split-merge `executionTime` sum (`mergeChunkMeta`) and frontend tests for the tolerant `rollup` decoding (`effectiveRollupMode`/`isLegacyRollupOff`).
+
 ## [1.3.2] - 2026-06-11
 
 ### Fixed
@@ -106,7 +116,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backend-only credential access
 - HTTPS support
 
-[Unreleased]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.2...v1.3.3
+[1.3.2]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.3...v1.3.0
+[1.2.3]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.2.0...v1.2.2
 [1.2.0]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/basekick-labs/grafana-arc-datasource/compare/v1.0.0...v1.1.0

@@ -4,6 +4,7 @@ import { GrafanaTheme2, LoadingState, QueryEditorProps, SelectableValue } from '
 import { CodeEditor, Collapse, Icon, IconName, InlineField, Input, RadioButtonGroup, Select, Tooltip, useStyles2 } from '@grafana/ui';
 import { ArcDataSource } from './datasource';
 import { ArcDataSourceOptions, ArcQuery } from './types';
+import { effectiveRollupMode } from './rollupMode';
 
 type Props = QueryEditorProps<ArcDataSource, ArcQuery, ArcDataSourceOptions>;
 
@@ -29,14 +30,11 @@ const ROLLUP_OPTIONS: Array<SelectableValue<'auto' | 'only' | 'off'>> = [
   { label: 'Off', value: 'off' },
 ];
 
-// effectiveRollupMode resolves the selector value, migrating the legacy boolean
-// `rollup` field (false → 'off') for queries saved before the 3-way selector.
-function effectiveRollupMode(q: ArcQuery): 'auto' | 'only' | 'off' {
-  if (q.rollupMode === 'auto' || q.rollupMode === 'only' || q.rollupMode === 'off') {
-    return q.rollupMode;
-  }
-  return q.rollup === false ? 'off' : 'auto';
-}
+// effectiveRollupMode / isLegacyRollupOff mirror the backend's tolerant decoding
+// (pkg/plugin/datasource.go optBool + ArcQuery.rollupMode) so a legacy panel saved
+// with rollup: "off" (string) DISPLAYS "Off" instead of "Auto". Kept in a pure
+// module (no Grafana UI imports) so they can be unit-tested standalone.
+// (imported above from ./rollupMode)
 
 const MIN_EDITOR_HEIGHT = 100;
 const MAX_EDITOR_HEIGHT = 600;
@@ -424,7 +422,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
   const intervalMs = data?.request?.intervalMs;
   useEffect(() => {
     const sql = query.sql;
-    const rollupOff = query.rollupMode === 'off' || (query.rollupMode == null && query.rollup === false);
+    // Use the same tolerant decoding as the displayed mode so a legacy panel saved
+    // with rollup: "off" (string) skips the explain call too — not just the strict
+    // boolean false. When off, the query deliberately hits source, so there's
+    // nothing to predict. Decode only the two fields this effect depends on (kept in
+    // the dependency array below) so the explain doesn't re-fire on unrelated edits.
+    const rollupOff =
+      effectiveRollupMode({ rollup: query.rollup, rollupMode: query.rollupMode } as ArcQuery) === 'off';
     if (!sql || !sql.trim() || rollupOff || fromMs == null || toMs == null) {
       setRollupCheck(null);
       return;
@@ -575,12 +579,24 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
   // option), but STILL surface the post-run result — so a query run with rollups
   // off shows "Source · <time>" rather than no provenance at all.
   const rollupOff = rollupMode === 'off';
-  const statusProps = rollupStatusProps({
+  let statusProps = rollupStatusProps({
     resultFresh,
     meta,
     rollupCheck: rollupOff ? null : rollupCheck,
     rollupChecking: rollupOff ? false : rollupChecking,
   });
+  // In Off mode there's nothing to predict (the query deliberately hits source),
+  // so instead of the misleading "Will roll up …" hint — or an empty space with no
+  // chip at all — show a neutral, explicit "Rollup disabled for this query". A
+  // fresh post-run result still wins (rollupStatusProps returns the "Source · time"
+  // chip above), so this only fills the pre-run / stale-result gap.
+  if (rollupOff && statusProps == null) {
+    statusProps = {
+      tone: 'neutral',
+      icon: 'minus-circle',
+      label: 'Rollup disabled for this query',
+    };
+  }
 
   return (
     <div className="gf-form-group">

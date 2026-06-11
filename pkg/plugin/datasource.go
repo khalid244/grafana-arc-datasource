@@ -332,6 +332,66 @@ func mergeFrames(frames []*data.Frame) *data.Frame {
 	return merged
 }
 
+// toInt64 coerces a meta value to int64 milliseconds. The query paths write
+// executionTime as int64 (duration.Milliseconds()); float64 is tolerated in case
+// a value ever round-trips through JSON. Anything else (missing/nil/other type)
+// returns ok=false so the caller can skip it.
+func toInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// mergeChunkMeta builds the merged frame's Custom meta from the per-chunk frames
+// produced by a split query. It keeps the same shape the non-split path uses (see
+// QueryArrow in arrow.go): servedBy/rollupCube provenance plus an executionTime
+// (int64 ms) the editor status chip renders. All chunks hit the same SQL so they
+// share provenance — the first chunk's servedBy/rollupCube wins. executionTime is
+// the SUM of all chunks' per-chunk durations (total backend work; chunks run
+// concurrently so this is not wall-clock). Chunks lacking executionTime are
+// tolerated, and the key is omitted entirely when no chunk reported one.
+func mergeChunkMeta(frames []*data.Frame, numChunks int) map[string]interface{} {
+	custom := map[string]interface{}{
+		"splitChunks": numChunks,
+	}
+	provenanceSet := false
+	var totalExecMs int64
+	haveExec := false
+	for _, f := range frames {
+		if f == nil || f.Meta == nil || f.Meta.Custom == nil {
+			continue
+		}
+		c, ok := f.Meta.Custom.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if !provenanceSet {
+			if v, ok := c["servedBy"]; ok {
+				custom["servedBy"] = v
+			}
+			if v, ok := c["rollupCube"]; ok {
+				custom["rollupCube"] = v
+			}
+			provenanceSet = true
+		}
+		if ms, ok := toInt64(c["executionTime"]); ok {
+			totalExecMs += ms
+			haveExec = true
+		}
+	}
+	if haveExec {
+		custom["executionTime"] = totalExecMs
+	}
+	return custom
+}
+
 // query executes a single query, with optional time-range splitting for large ranges
 func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings, query backend.DataQuery) backend.DataResponse {
 	var response backend.DataResponse
@@ -481,27 +541,9 @@ func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings
 		return response
 	}
 
-	custom := map[string]interface{}{
-		"splitChunks": len(chunks),
-	}
-	// Carry the rollup/source provenance from the chunk frames. All chunks hit the
-	// same SQL, so they are served the same way; propagate the first chunk's keys.
-	for _, f := range orderedFrames {
-		if f != nil && f.Meta != nil && f.Meta.Custom != nil {
-			if c, ok := f.Meta.Custom.(map[string]interface{}); ok {
-				if v, ok := c["servedBy"]; ok {
-					custom["servedBy"] = v
-				}
-				if v, ok := c["rollupCube"]; ok {
-					custom["rollupCube"] = v
-				}
-				break
-			}
-		}
-	}
 	merged.Meta = &data.FrameMeta{
 		ExecutedQueryString: qm.SQL,
-		Custom:              custom,
+		Custom:              mergeChunkMeta(orderedFrames, len(chunks)),
 	}
 
 	// Prepare frames (long-to-wide conversion, etc.)

@@ -477,6 +477,93 @@ func TestMergeFrames_SkipsEmptyFirstFrame(t *testing.T) {
 	}
 }
 
+// --- mergeChunkMeta ---
+//
+// The split/chunk merge step rebuilds the merged frame's Custom meta. It must
+// keep the same shape the non-split path emits (servedBy/rollupCube +
+// executionTime as int64 ms) so the editor status chip renders identically, and
+// must carry executionTime as the SUM of all chunks' durations (tolerating chunks
+// that lack the field).
+
+// chunkFrame is a test helper that builds a frame whose Meta.Custom mimics what
+// QueryArrow/QueryJSON/QueryArrowFlightSQLStyle attach to a chunk frame.
+func chunkFrame(custom map[string]interface{}) *data.Frame {
+	f := data.NewFrame("", data.NewField("value", nil, []float64{1.0}))
+	f.Meta = &data.FrameMeta{Custom: custom}
+	return f
+}
+
+func TestMergeChunkMeta_SumsExecutionTime(t *testing.T) {
+	frames := []*data.Frame{
+		chunkFrame(map[string]interface{}{"executionTime": int64(10), "servedBy": "rollup", "rollupCube": "default.events.by_event"}),
+		chunkFrame(map[string]interface{}{"executionTime": int64(20), "servedBy": "rollup", "rollupCube": "default.events.by_event"}),
+		chunkFrame(map[string]interface{}{"executionTime": int64(30), "servedBy": "rollup", "rollupCube": "default.events.by_event"}),
+	}
+	meta := mergeChunkMeta(frames, len(frames))
+
+	// executionTime is the SUM (10+20+30) as int64, matching the non-split shape.
+	got, ok := meta["executionTime"]
+	if !ok {
+		t.Fatal("merged meta missing executionTime")
+	}
+	if v, isInt := got.(int64); !isInt || v != 60 {
+		t.Errorf("executionTime = %v (%T), want int64(60)", got, got)
+	}
+	if meta["servedBy"] != "rollup" {
+		t.Errorf("servedBy = %v, want rollup", meta["servedBy"])
+	}
+	if meta["rollupCube"] != "default.events.by_event" {
+		t.Errorf("rollupCube = %v, want default.events.by_event", meta["rollupCube"])
+	}
+	if meta["splitChunks"] != 3 {
+		t.Errorf("splitChunks = %v, want 3", meta["splitChunks"])
+	}
+}
+
+func TestMergeChunkMeta_ToleratesMissingExecutionTime(t *testing.T) {
+	// Some chunks lack executionTime; the sum covers only those that have it.
+	frames := []*data.Frame{
+		chunkFrame(map[string]interface{}{"executionTime": int64(15), "servedBy": "source"}),
+		chunkFrame(map[string]interface{}{"servedBy": "source"}), // no executionTime
+		chunkFrame(map[string]interface{}{"executionTime": int64(5), "servedBy": "source"}),
+	}
+	meta := mergeChunkMeta(frames, len(frames))
+	if v, ok := meta["executionTime"].(int64); !ok || v != 20 {
+		t.Errorf("executionTime = %v, want int64(20)", meta["executionTime"])
+	}
+	if meta["servedBy"] != "source" {
+		t.Errorf("servedBy = %v, want source", meta["servedBy"])
+	}
+}
+
+func TestMergeChunkMeta_OmitsExecutionTimeWhenNoneReport(t *testing.T) {
+	// No chunk reports executionTime → the key is omitted (not a misleading 0).
+	frames := []*data.Frame{
+		chunkFrame(map[string]interface{}{"servedBy": "source"}),
+		chunkFrame(nil),
+		{}, // nil Meta
+	}
+	meta := mergeChunkMeta(frames, len(frames))
+	if _, ok := meta["executionTime"]; ok {
+		t.Errorf("expected executionTime to be omitted, got %v", meta["executionTime"])
+	}
+	if meta["servedBy"] != "source" {
+		t.Errorf("servedBy = %v, want source", meta["servedBy"])
+	}
+}
+
+func TestMergeChunkMeta_CoercesFloatExecutionTime(t *testing.T) {
+	// JSON round-tripping can turn int64 into float64; it must still sum as int64.
+	frames := []*data.Frame{
+		chunkFrame(map[string]interface{}{"executionTime": float64(12)}),
+		chunkFrame(map[string]interface{}{"executionTime": float64(8)}),
+	}
+	meta := mergeChunkMeta(frames, len(frames))
+	if v, ok := meta["executionTime"].(int64); !ok || v != 20 {
+		t.Errorf("executionTime = %v (%T), want int64(20)", meta["executionTime"], meta["executionTime"])
+	}
+}
+
 // --- containsLIMIT ---
 
 func TestContainsLIMIT(t *testing.T) {
