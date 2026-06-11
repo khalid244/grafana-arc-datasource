@@ -443,8 +443,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
     }
     setRollupChecking(true);
     const t = setTimeout(() => {
+      // Forward the panel's real interval so the backend expands $__interval to
+      // the bucket grain the query will actually run at (getTemplateSrv().replace
+      // cannot resolve $__interval outside a real panel query).
       datasource
-        .explainRollup(sql, fromMs, toMs)
+        .explainRollup(sql, fromMs, toMs, intervalMs != null && intervalMs > 0 ? intervalMs : undefined)
         .then(setRollupCheck)
         .catch(() => setRollupCheck(null))
         .finally(() => setRollupChecking(false));

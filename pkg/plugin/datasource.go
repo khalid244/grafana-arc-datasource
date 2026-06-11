@@ -248,11 +248,13 @@ func splitTimeRange(from, to time.Time, chunkSize time.Duration) []backend.TimeR
 	return chunks
 }
 
-// executeChunk runs a single query chunk against Arc
-func (d *ArcDatasource) executeChunk(ctx context.Context, settings *ArcInstanceSettings, rawSQL string, chunk backend.TimeRange, originalRange backend.TimeRange, rollupMode string) (*data.Frame, error) {
+// executeChunk runs a single query chunk against Arc. interval is the panel's
+// real interval (backend.DataQuery.Interval); when > 0 it overrides the
+// range-based $__interval fallback.
+func (d *ArcDatasource) executeChunk(ctx context.Context, settings *ArcInstanceSettings, rawSQL string, chunk backend.TimeRange, originalRange backend.TimeRange, interval time.Duration, rollupMode string) (*data.Frame, error) {
 	// Apply macros with the chunk's time range for time filtering,
 	// but keep the original range for $__interval calculation
-	sql := ApplyMacrosWithSplit(rawSQL, chunk, originalRange)
+	sql := ApplyMacrosWithSplit(rawSQL, chunk, originalRange, interval)
 
 	if settings.settings.UseArrow {
 		return QueryArrowFlightSQLStyle(ctx, settings, sql, chunk, rollupMode)
@@ -449,7 +451,7 @@ func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings
 			}
 			defer func() { <-semaphore }()
 
-			frame, err := d.executeChunk(ctx, settings, qm.SQL, ch, query.TimeRange, rollupMode)
+			frame, err := d.executeChunk(ctx, settings, qm.SQL, ch, query.TimeRange, query.Interval, rollupMode)
 			if err != nil {
 				err = fmt.Errorf("[chunk %s to %s] %w",
 					ch.From.Format("2006-01-02 15:04"),
@@ -528,8 +530,12 @@ func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings
 func (d *ArcDatasource) querySingle(ctx context.Context, settings *ArcInstanceSettings, query backend.DataQuery, qm ArcQuery) backend.DataResponse {
 	var response backend.DataResponse
 
-	// Apply time range macros
-	sql := ApplyMacros(qm.SQL, query.TimeRange)
+	// Apply time range macros. query.Interval is Grafana's real panel interval
+	// (respects the user's interval selection / panel min-interval), so
+	// $__interval matches what the user asked for instead of a range-derived
+	// guess. Usually the frontend has already interpolated $__interval via
+	// scopedVars, but alerting/explore paths reach here with the literal macro.
+	sql := ApplyMacros(qm.SQL, query.TimeRange, query.Interval)
 
 	log.DefaultLogger.Debug("Executing Arc query",
 		"refId", qm.RefID,
@@ -878,10 +884,12 @@ func (d *ArcDatasource) CallResource(ctx context.Context, req *backend.CallResou
 }
 
 // handleRollupExplain answers the editor's pre-run "will this roll up?" check. It
-// expands Grafana macros for the panel's current time range — so $__interval and
-// $__timeFilter match what the real query will send — then asks arc's
-// non-executing explain endpoint and relays {supported, cube, reason}. The range
-// matters: the same query rolls up at 30d (hourly bucket) but not at 6h (sub-hour).
+// expands Grafana macros for the panel's current time range and interval — so
+// $__interval and $__timeFilter match what the real query will send — then asks
+// arc's non-executing explain endpoint and relays {supported, cube, reason}.
+// intervalMs (the panel's computed interval) decides the $__interval bucket;
+// without it the range-based fallback applies, which matters: the same query
+// rolls up at 30d (hourly bucket) but not at 6h (sub-hour).
 func (d *ArcDatasource) handleRollupExplain(ctx context.Context, req *backend.CallResourceRequest, settings *ArcInstanceSettings, sender backend.CallResourceResponseSender) error {
 	send := func(body string) error {
 		return sender.Send(&backend.CallResourceResponse{
@@ -891,14 +899,17 @@ func (d *ArcDatasource) handleRollupExplain(ctx context.Context, req *backend.Ca
 		})
 	}
 	var body struct {
-		SQL  string `json:"sql"`
-		From int64  `json:"from"` // epoch ms
-		To   int64  `json:"to"`   // epoch ms
+		SQL        string `json:"sql"`
+		From       int64  `json:"from"`       // epoch ms
+		To         int64  `json:"to"`         // epoch ms
+		IntervalMs int64  `json:"intervalMs"` // panel's computed interval (ms); 0/absent → range-based fallback
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil || strings.TrimSpace(body.SQL) == "" {
 		return send(`{"supported":false,"reason":"empty query"}`)
 	}
-	expanded := ApplyMacros(body.SQL, backend.TimeRange{From: time.UnixMilli(body.From), To: time.UnixMilli(body.To)})
+	expanded := ApplyMacros(body.SQL,
+		backend.TimeRange{From: time.UnixMilli(body.From), To: time.UnixMilli(body.To)},
+		time.Duration(body.IntervalMs)*time.Millisecond)
 
 	payload, _ := json.Marshal(map[string]string{"sql": expanded})
 	hreq, err := http.NewRequestWithContext(ctx, "POST",

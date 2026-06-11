@@ -10,7 +10,7 @@ import (
 
 func main() {
 	ds := plugin.NewArcDatasource()
-	
+
 	// Serve plugin
 	if err := datasource.Serve(datasource.ServeOpts{
 		QueryDataHandler:    ds,

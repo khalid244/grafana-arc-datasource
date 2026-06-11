@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/gtime"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
@@ -380,6 +382,8 @@ func JSONToDataFrame(result map[string]interface{}) (*data.Frame, error) {
 }
 
 // calculateInterval picks an appropriate aggregation interval for the given duration.
+// This is only a FALLBACK for callers that don't know the panel's real interval
+// (see resolveInterval) — when Grafana supplies one, it must win.
 func calculateInterval(duration time.Duration) string {
 	switch {
 	case duration > 7*24*time.Hour:
@@ -391,6 +395,38 @@ func calculateInterval(duration time.Duration) string {
 	default:
 		return "10 seconds"
 	}
+}
+
+// formatInterval renders a duration as a canonical interval string that is
+// guaranteed to round-trip through intervalToSeconds (e.g. 1h → "1h",
+// 90s → "90s", 30m → "30m"). Sub-second durations clamp to "1s".
+func formatInterval(d time.Duration) string {
+	secs := int64((d + time.Second/2) / time.Second) // round to nearest second
+	if secs < 1 {
+		secs = 1
+	}
+	switch {
+	case secs%3600 == 0:
+		return fmt.Sprintf("%dh", secs/3600)
+	case secs%60 == 0:
+		return fmt.Sprintf("%dm", secs/60)
+	default:
+		return fmt.Sprintf("%ds", secs)
+	}
+}
+
+// resolveInterval picks the string substituted for $__interval. When Grafana
+// supplied the panel's real interval (alerting, explore, resource calls that
+// forward intervalMs), that wins; otherwise fall back to the legacy
+// range-based table. Ignoring the user-selected interval was a prod bug: a
+// ≤7d range always produced a sub-hour bucket, which Arc's hourly rollup
+// cubes (bucket_seconds % 3600 == 0) can never serve — even when the user
+// had explicitly set a 1h interval.
+func resolveInterval(interval time.Duration, rangeDuration time.Duration) string {
+	if interval > 0 {
+		return formatInterval(interval)
+	}
+	return calculateInterval(rangeDuration)
 }
 
 // expandTimeFilter replaces $__timeFilter(column) with column >= 'from' AND column < 'to'.
@@ -424,8 +460,11 @@ func expandTimeFilter(sql string, from, to time.Time) string {
 	}
 }
 
-// ApplyMacros replaces Grafana macros in SQL query
-func ApplyMacros(sql string, timeRange backend.TimeRange) string {
+// ApplyMacros replaces Grafana macros in SQL query. interval is the panel's
+// real interval (backend.DataQuery.Interval or a forwarded intervalMs); when
+// > 0 it is substituted for $__interval, when 0 the legacy range-based table
+// decides (see resolveInterval).
+func ApplyMacros(sql string, timeRange backend.TimeRange, interval time.Duration) string {
 	// $__timeFilter(column) -> column >= 'start' AND column < 'end'
 	sql = expandTimeFilter(sql, timeRange.From, timeRange.To)
 
@@ -435,8 +474,8 @@ func ApplyMacros(sql string, timeRange backend.TimeRange) string {
 	// $__timeTo() -> end time
 	sql = strings.ReplaceAll(sql, "$__timeTo()", fmt.Sprintf("'%s'", timeRange.To.Format(time.RFC3339)))
 
-	// $__interval -> calculate interval based on time range
-	sql = strings.ReplaceAll(sql, "$__interval", calculateInterval(timeRange.To.Sub(timeRange.From)))
+	// $__interval -> the real panel interval, falling back to the range table
+	sql = strings.ReplaceAll(sql, "$__interval", resolveInterval(interval, timeRange.To.Sub(timeRange.From)))
 
 	// $__timeGroup(column, interval) -> epoch-based bucketing
 	// DuckDB's date_trunc/time_bucket retains nanosecond residuals on TIMESTAMP_NS columns,
@@ -448,8 +487,10 @@ func ApplyMacros(sql string, timeRange backend.TimeRange) string {
 }
 
 // ApplyMacrosWithSplit replaces macros using the chunk's time range for filtering
-// but the original full range for $__interval calculation (so bucket sizes stay consistent)
-func ApplyMacrosWithSplit(sql string, chunk backend.TimeRange, originalRange backend.TimeRange) string {
+// but the original full range for $__interval calculation (so bucket sizes stay
+// consistent). interval is the panel's real interval; when > 0 it wins over the
+// range table (see resolveInterval) and is identical for every chunk by construction.
+func ApplyMacrosWithSplit(sql string, chunk backend.TimeRange, originalRange backend.TimeRange, interval time.Duration) string {
 	// $__timeFilter uses chunk boundaries
 	sql = expandTimeFilter(sql, chunk.From, chunk.To)
 
@@ -457,8 +498,9 @@ func ApplyMacrosWithSplit(sql string, chunk backend.TimeRange, originalRange bac
 	sql = strings.ReplaceAll(sql, "$__timeFrom()", fmt.Sprintf("'%s'", chunk.From.Format(time.RFC3339)))
 	sql = strings.ReplaceAll(sql, "$__timeTo()", fmt.Sprintf("'%s'", chunk.To.Format(time.RFC3339)))
 
-	// $__interval uses the ORIGINAL range so bucket sizes are consistent across all chunks
-	sql = strings.ReplaceAll(sql, "$__interval", calculateInterval(originalRange.To.Sub(originalRange.From)))
+	// $__interval: real panel interval, else the ORIGINAL range decides so
+	// bucket sizes are consistent across all chunks
+	sql = strings.ReplaceAll(sql, "$__interval", resolveInterval(interval, originalRange.To.Sub(originalRange.From)))
 
 	sql = expandTimeGroup(sql)
 
@@ -495,10 +537,49 @@ func intervalToSeconds(interval string) int {
 		return 43200
 	case "1d", "1 day":
 		return 86400
-	default:
-		return 3600
 	}
+
+	// Grafana-style durations: "2h", "90m", "1d", "1w", "1M", "1y"
+	// (gtime falls back to time.ParseDuration internally, so "1h0m0s" and
+	// "90s" parse here too).
+	if d, err := gtime.ParseDuration(interval); err == nil {
+		if secs := int(d / time.Second); secs >= 1 {
+			return secs
+		}
+	}
+
+	// Plain Go durations not covered above (defensive; gtime already
+	// delegates to time.ParseDuration for non-d/w/M/y inputs).
+	if d, err := time.ParseDuration(interval); err == nil {
+		if secs := int(d / time.Second); secs >= 1 {
+			return secs
+		}
+	}
+
+	// Verbose forms: "45 minutes", "2 hours", "1 day"
+	if m := verboseIntervalRe.FindStringSubmatch(interval); m != nil {
+		var n int
+		if _, err := fmt.Sscanf(m[1], "%d", &n); err == nil && n >= 1 {
+			switch strings.ToLower(m[2]) {
+			case "second":
+				return n
+			case "minute":
+				return n * 60
+			case "hour":
+				return n * 3600
+			case "day":
+				return n * 86400
+			}
+		}
+	}
+
+	log.DefaultLogger.Warn("Could not parse interval, defaulting to 1 hour",
+		"interval", interval)
+	return 3600
 }
+
+// verboseIntervalRe matches "N unit(s)" forms like "45 minutes" or "1 day".
+var verboseIntervalRe = regexp.MustCompile(`(?i)^(\d+)\s*(second|minute|hour|day)s?$`)
 
 // expandTimeGroup replaces $__timeGroup(column, interval) with epoch-based bucketing SQL.
 // DuckDB's date_trunc/time_bucket retains nanosecond residuals on TIMESTAMP_NS columns,

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-06-11
+
+### Fixed
+- **`$__interval` now honors the interval Grafana actually computed for the query instead of a hardcoded range table.** The backend substituted `$__interval` purely from the time-range width (>7d → `1 hour`, 24h–7d → `10 minutes`, 6–24h → `1 minute`, else `10 seconds`), ignoring the user's interval selection/panel min-interval. For any range ≤7d this forced a sub-hour bucket onto Arc's rollup router, which rejected it with "time bucket is finer than the hourly cube" — even when the user had explicitly set a 1h interval (hourly cubes require `bucket_seconds % 3600 == 0`). The backend now threads `DataQuery.Interval` through `ApplyMacros`/`ApplyMacrosWithSplit` (single, split-chunk, alerting, and explore paths) and substitutes a canonical duration (`1h`, `30m`, `90s`); the range table remains only as a fallback when no interval is supplied.
+- The pre-run rollup check (`rollup-explain` resource) now sends the panel's computed `intervalMs` and the backend uses it when expanding `$__interval`, so the "will this roll up?" prediction matches the bucket grain the query actually runs at. Also corrected `explainRollup`'s doc comment: `getTemplateSrv().replace` without scopedVars does **not** resolve `$__interval` client-side — the macro is forwarded literally and substituted server-side.
+- `intervalToSeconds` now parses arbitrary durations (`2h`, `90m`, `1h0m0s`, Grafana units like `1d`/`1w`, and verbose forms like `45 minutes`) instead of silently defaulting any unknown string to 3600s; unparseable inputs still default to 3600s but log a warning.
+
+### Added
+- Frontend Jest wiring (`jest` config block in `package.json`) and a first unit test covering the `explainRollup` request body — `npm run test:ci` previously passed trivially with no tests.
+
 ## [1.3.1] - 2026-06-08
 
 ### Fixed

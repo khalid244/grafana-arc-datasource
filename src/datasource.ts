@@ -124,29 +124,40 @@ export class ArcDataSource extends DataSourceWithBackend<ArcQuery, ArcDataSource
 
   /**
    * Pre-run check: would this query be served from a rollup cube? Macros are
-   * expanded server-side for the given time range (the answer is range-dependent:
-   * a query rolls up at 30d but not at 6h, because $__interval sets the bucket).
+   * expanded server-side for the given time range and interval (the answer is
+   * range- and interval-dependent: $__interval sets the bucket, and Arc's
+   * hourly cubes can only serve buckets that are multiples of 1h).
+   *
+   * intervalMs is the panel's computed interval (request.intervalMs). Pass it
+   * whenever available so the backend substitutes the REAL bucket grain for
+   * $__interval; when omitted the backend falls back to a coarser
+   * range-derived interval.
    */
   async explainRollup(
     sql: string,
     fromMs: number,
-    toMs: number
+    toMs: number,
+    intervalMs?: number
   ): Promise<{ supported: boolean; cube?: string; reason?: string }> {
     try {
-      // Interpolate template variables the SAME way a real query does
-      // (applyTemplateVariables → getTemplateSrv().replace). Critically this
-      // resolves $__interval to Grafana's panel interval — so the prediction uses
-      // the bucket grain the query will ACTUALLY run at. Without this the backend
-      // falls back to its own coarser calculateInterval(range) and wrongly predicts
-      // "will roll up" for a sub-hour $__interval (e.g. 30m), which the hourly cube
-      // can't serve. $__timeFilter/$__timeGroup are arc-specific and pass through
-      // untouched for server-side expansion.
+      // Interpolate dashboard template variables the SAME way a real query does
+      // (applyTemplateVariables → getTemplateSrv().replace). NOTE: with
+      // scopedVars=undefined this does NOT resolve $__interval — that scoped
+      // variable only exists during a real panel query — so $__interval reaches
+      // the backend literally and is substituted there from intervalMs (or the
+      // backend's range-derived fallback when intervalMs is absent).
+      // $__timeFilter/$__timeGroup are arc-specific and pass through untouched
+      // for server-side expansion.
       const interpolatedSql = getTemplateSrv().replace(sql, undefined, this.interpolateVariable);
-      return await getBackendSrv().post(`/api/datasources/uid/${this.uid}/resources/rollup-explain`, {
+      const body: { sql: string; from: number; to: number; intervalMs?: number } = {
         sql: interpolatedSql,
         from: fromMs,
         to: toMs,
-      });
+      };
+      if (intervalMs != null && intervalMs > 0) {
+        body.intervalMs = intervalMs;
+      }
+      return await getBackendSrv().post(`/api/datasources/uid/${this.uid}/resources/rollup-explain`, body);
     } catch {
       return { supported: false, reason: 'rollup check unavailable' };
     }

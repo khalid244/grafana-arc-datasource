@@ -382,8 +382,8 @@ func TestSplitTimeRange_BoundaryNoDuplicates(t *testing.T) {
 	boundaryTime := chunks[0].To // e.g. 11:00:00
 	sql := "SELECT * FROM t WHERE $__timeFilter(time)"
 
-	chunk1SQL := ApplyMacrosWithSplit(sql, chunks[0], backend.TimeRange{From: from, To: to})
-	chunk2SQL := ApplyMacrosWithSplit(sql, chunks[1], backend.TimeRange{From: from, To: to})
+	chunk1SQL := ApplyMacrosWithSplit(sql, chunks[0], backend.TimeRange{From: from, To: to}, 0)
+	chunk2SQL := ApplyMacrosWithSplit(sql, chunks[1], backend.TimeRange{From: from, To: to}, 0)
 
 	// Chunk 1 should use: time < '...11:00:00Z' (exclusive end)
 	boundaryStr := boundaryTime.Format(time.RFC3339)
@@ -660,7 +660,7 @@ func TestApplyMacros_TimeFilter(t *testing.T) {
 		To:   time.Date(2026, 2, 18, 11, 0, 0, 0, time.UTC),
 	}
 	sql := "SELECT * FROM t WHERE $__timeFilter(time)"
-	result := ApplyMacros(sql, tr)
+	result := ApplyMacros(sql, tr, 0)
 
 	if strings.Contains(result, "$__timeFilter") {
 		t.Errorf("macro not expanded: %s", result)
@@ -676,7 +676,7 @@ func TestApplyMacros_TimeFilter_CustomColumn(t *testing.T) {
 		To:   time.Date(2026, 2, 18, 11, 0, 0, 0, time.UTC),
 	}
 	sql := "SELECT * FROM t WHERE $__timeFilter(created_at)"
-	result := ApplyMacros(sql, tr)
+	result := ApplyMacros(sql, tr, 0)
 
 	if strings.Contains(result, "$__timeFilter") {
 		t.Errorf("macro not expanded: %s", result)
@@ -704,7 +704,7 @@ func TestApplyMacros_Interval(t *testing.T) {
 			From: time.Date(2026, 2, 18, 0, 0, 0, 0, time.UTC),
 			To:   time.Date(2026, 2, 18, 0, 0, 0, 0, time.UTC).Add(time.Duration(c.hours) * time.Hour),
 		}
-		result := ApplyMacros("GROUP BY $__interval", tr)
+		result := ApplyMacros("GROUP BY $__interval", tr, 0)
 		if !strings.Contains(result, c.expected) {
 			t.Errorf("for %dh range, expected interval %q in: %s", c.hours, c.expected, result)
 		}
@@ -722,7 +722,7 @@ func TestApplyMacrosWithSplit_UsesChunkForFilter_OriginalForInterval(t *testing.
 	}
 
 	sql := "WHERE $__timeFilter(time) GROUP BY $__interval"
-	result := ApplyMacrosWithSplit(sql, chunk, originalRange)
+	result := ApplyMacrosWithSplit(sql, chunk, originalRange, 0)
 
 	// Time filter should use chunk boundaries
 	if !strings.Contains(result, "2026-02-18T06:00:00Z") {
