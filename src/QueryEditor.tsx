@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { css } from '@emotion/css';
 import { GrafanaTheme2, LoadingState, QueryEditorProps, SelectableValue } from '@grafana/data';
-import { CodeEditor, Collapse, Icon, IconName, InlineField, Input, RadioButtonGroup, Select, Tooltip, useStyles2 } from '@grafana/ui';
+import { CodeEditor, Collapse, Icon, InlineField, Input, RadioButtonGroup, Select, Tooltip, useStyles2 } from '@grafana/ui';
 import { ArcDataSource } from './datasource';
 import { ArcDataSourceOptions, ArcQuery } from './types';
 import { effectiveRollupMode } from './rollupMode';
+import { rollupStatusProps, type RollupStatusProps } from './rollupStatus';
 
 type Props = QueryEditorProps<ArcDataSource, ArcQuery, ArcDataSourceOptions>;
 
@@ -57,58 +58,11 @@ function labelFor<T extends string | undefined>(opts: Array<SelectableValue<T>>,
   return m?.label ?? String(val ?? '');
 }
 
-// fmtMs humanizes an execution time in milliseconds for the served-by badge:
-// sub-second stays in ms, single-/double-digit seconds get 2 decimals, and
-// anything ≥10s drops to 1 decimal. Nullish renders as an em dash.
-function fmtMs(ms: unknown): string {
-  if (ms == null || typeof ms !== 'number' || !isFinite(ms)) {
-    return '—';
-  }
-  if (ms < 1000) {
-    return `${Math.round(ms)} ms`;
-  }
-  const s = ms / 1000;
-  return `${s.toFixed(s < 10 ? 2 : 1)} s`;
-}
-
-// CTE_SUFFIX matches the trailing " (cte)" marker the backend appends to a cube
-// id when the query's base CTE was rewritten onto the cube. It's internal jargon,
-// so we strip it from the visible label and surface it only as a subtle marker.
-const CTE_SUFFIX = / \(cte\)\s*$/i;
-
-// parseCube splits a backend cube id ("default.downloads.by_site (cte)") into the
-// terse kind shown on the pill, the clean full id for the tooltip, and whether it
-// was a CTE-base rewrite. The long all-dimensions cube collapses to "dim-rich".
-function parseCube(raw?: string): { kind: string; full: string; isCte: boolean } {
-  if (!raw) {
-    return { kind: 'a cube', full: '', isCte: false };
-  }
-  const isCte = CTE_SUFFIX.test(raw);
-  const full = raw.replace(CTE_SUFFIX, '');
-  let kind = (full.split('.').pop() || full).trim();
-  if (kind.split('_').length > 4) {
-    kind = 'dim-rich';
-  }
-  return { kind, full, isCte };
-}
-
-type RollupTone = 'success' | 'warning' | 'neutral' | 'muted';
-
 // RollupStatus is the unified status chip for both the pre-run prediction
 // ("will this query roll up?") and the post-run provenance ("was it served from a
 // cube?"). One coherent pill across all five states: a tinted leading icon, a terse
 // label, an optional faded "(cte)" marker, and provenance detail in the tooltip.
-interface RollupStatusProps {
-  tone: RollupTone;
-  icon: IconName;
-  spin?: boolean;
-  label: React.ReactNode;
-  cube?: string;
-  isCte?: boolean;
-  detail?: string;
-  tooltip?: React.ReactNode;
-}
-
+// The state-selection logic + helpers live in ./rollupStatus (pure, unit-tested).
 function RollupStatus({ tone, icon, spin, label, cube, isCte, detail, tooltip }: RollupStatusProps) {
   const styles = useStyles2(getRollupStatusStyles);
   const chip = (
@@ -127,103 +81,6 @@ function RollupStatus({ tone, icon, spin, label, cube, isCte, detail, tooltip }:
   ) : (
     chip
   );
-}
-
-// rollupStatusProps is the single source of truth for WHICH of the five chip
-// states renders. It fuses the pre-run prediction and the post-run result into
-// one lifecycle-aware indicator that upgrades prediction → result, then falls
-// back to a prediction the instant the executed SQL no longer matches the editor.
-//
-// resultFresh is the crux: a `meta` block only describes the LAST executed query,
-// so it must be discarded the moment the user edits the SQL. The caller computes
-// freshness by comparing the executed target's (uninterpolated) sql to the current
-// editor sql — see the call site for why request.targets carries the raw sql.
-//
-// Returns null when nothing should render (mode off, or pre-run with no result,
-// no prediction, and no in-flight check).
-function rollupStatusProps(args: {
-  resultFresh: boolean;
-  meta: { servedBy?: string; rollupCube?: unknown; executionTime?: unknown } | null;
-  rollupCheck: { supported: boolean; cube?: string; reason?: string } | null;
-  rollupChecking: boolean;
-}): RollupStatusProps | null {
-  const { resultFresh, meta, rollupCheck, rollupChecking } = args;
-
-  // RESULT (upgraded): a fresh result for the current SQL outranks any prediction.
-  if (resultFresh && meta) {
-    if (meta.servedBy === 'rollup') {
-      const cube = parseCube(meta.rollupCube ? String(meta.rollupCube) : undefined);
-      return {
-        tone: 'success',
-        icon: 'bolt',
-        label: 'Rolled up',
-        cube: cube.kind || undefined,
-        isCte: cube.isCte,
-        detail: fmtMs(meta.executionTime),
-        tooltip: (
-          <>
-            Served from cube
-            <br />
-            {cube.full || '—'}
-            {cube.isCte && (
-              <>
-                <br />
-                CTE base rewrite
-              </>
-            )}
-          </>
-        ),
-      };
-    }
-    return {
-      tone: 'neutral',
-      icon: 'database',
-      label: 'Source',
-      detail: fmtMs(meta.executionTime),
-      tooltip: 'Served from a full source scan',
-    };
-  }
-
-  // PREDICTION: no fresh result, so forecast what the next run will do.
-  if (rollupCheck) {
-    if (rollupCheck.supported) {
-      const cube = parseCube(rollupCheck.cube);
-      return {
-        tone: 'success',
-        icon: 'clock-nine',
-        label: 'Will roll up',
-        cube: cube.kind,
-        isCte: cube.isCte,
-        tooltip: (
-          <>
-            Will be served from cube
-            <br />
-            {cube.full || '—'}
-            {cube.isCte && (
-              <>
-                <br />
-                CTE base rewrite
-              </>
-            )}
-          </>
-        ),
-      };
-    }
-    return {
-      tone: 'warning',
-      icon: 'exclamation-triangle',
-      label: "Won't roll up",
-      detail: rollupCheck.reason || 'source scan',
-      tooltip: rollupCheck.reason || 'Will run against source',
-    };
-  }
-
-  // CHECKING: the debounced explain request is in flight.
-  if (rollupChecking) {
-    return { tone: 'muted', icon: 'sync', spin: true, label: 'Checking rollup…' };
-  }
-
-  return null;
 }
 
 const getRollupStatusStyles = (theme: GrafanaTheme2) => ({
@@ -555,48 +412,62 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
   // rollup defaults to on — only an explicit `false` disables it.
   const rollupMode = effectiveRollupMode(query);
 
-  // Provenance from the last executed query. `meta` describes the LAST run only,
-  // so it must be treated as fresh ONLY when that run's SQL still matches the
-  // editor — otherwise the chip would claim "Rolled up" against newly-edited SQL.
+  // Provenance from the last executed query. `meta` describes the LAST run only.
   const meta: any = data?.series?.[0]?.meta?.custom;
 
   // Staleness signal: compare the executed query's sql to the current editor sql.
   // Grafana's DataSourceWithBackend keeps the ORIGINAL (uninterpolated) targets on
   // request.targets and only runs applyTemplateVariables on the copy sent to the
   // backend — so target.sql here is the raw editor sql, directly comparable to
-  // query.sql (both pre-interpolation). The moment the user edits, these diverge
-  // and the chip falls back to a prediction until the next run upgrades it again.
+  // query.sql (both pre-interpolation).
   const executedTarget = data?.request?.targets?.find((t) => t.refId === query.refId) as
     | { sql?: string }
     | undefined;
-  const resultFresh =
-    data?.state === LoadingState.Done &&
-    meta != null &&
-    (executedTarget?.sql ?? '').trim() === (query.sql ?? '').trim();
+  const currentSql = (query.sql ?? '').trim();
+
+  // A result is "fresh now" only when the run is Done AND its SQL still matches the
+  // editor. But clicking out of the editor RE-RUNS the same query, and during the
+  // Loading phase there's no Done result — which would blink the provenance chip back
+  // to "Source · —" and then to the result again. To avoid that flash, remember the
+  // last fresh result and keep showing it while the SAME SQL reloads; only an actual
+  // SQL edit drops us to the "—" baseline (a genuinely different query).
+  const freshNow =
+    data?.state === LoadingState.Done && meta != null && (executedTarget?.sql ?? '').trim() === currentSql;
+  // Remember the last fresh result so a re-run of the SAME query (clicking out of the
+  // editor ALWAYS re-runs) keeps showing the result through the Loading phase instead
+  // of blinking to "Source · —" and back. Updated synchronously during render (an
+  // idempotent cache write — no effect lag); only an actual SQL edit (sql no longer
+  // matches) drops us back to the "—" baseline.
+  const lastResultRef = useRef<{ sql: string; meta: any } | null>(null);
+  if (freshNow) {
+    lastResultRef.current = { sql: currentSql, meta };
+  }
+  const heldMeta =
+    lastResultRef.current && lastResultRef.current.sql === currentSql ? lastResultRef.current.meta : null;
+  // Show the live result when fresh, else the held result for the same SQL (reload),
+  // else nothing (SQL changed → "Source · —").
+  const effectiveMeta = freshNow ? meta : heldMeta;
+  const resultFresh = effectiveMeta != null;
 
   // One lifecycle-aware indicator: result when fresh, else prediction/checking.
   // In Off mode we suppress the pre-run prediction/checking (rolling up isn't an
   // option), but STILL surface the post-run result — so a query run with rollups
   // off shows "Source · <time>" rather than no provenance at all.
   const rollupOff = rollupMode === 'off';
-  let statusProps = rollupStatusProps({
+  // An ORDERED list of chips. The last is a PERSISTENT provenance chip (always
+  // present, defaults to "Source · —") that upgrades in place to "Source · <time>"
+  // or "Rolled up · cube · <time>" once a result lands. A source scan predicted not
+  // to roll up also gets the amber "Won't roll up · why" warning above it. In Off
+  // mode the prediction is suppressed (rollupCheck null) so only the Source
+  // provenance chip shows. See rollupStatusProps.
+  const statusChips = rollupStatusProps({
     resultFresh,
-    meta,
+    meta: effectiveMeta,
     rollupCheck: rollupOff ? null : rollupCheck,
     rollupChecking: rollupOff ? false : rollupChecking,
   });
-  // In Off mode there's nothing to predict (the query deliberately hits source),
-  // so instead of the misleading "Will roll up …" hint — or an empty space with no
-  // chip at all — show a neutral, explicit "Rollup disabled for this query". A
-  // fresh post-run result still wins (rollupStatusProps returns the "Source · time"
-  // chip above), so this only fills the pre-run / stale-result gap.
-  if (rollupOff && statusProps == null) {
-    statusProps = {
-      tone: 'neutral',
-      icon: 'minus-circle',
-      label: 'Rollup disabled for this query',
-    };
-  }
+  // Only describe a query that actually has SQL — an empty editor shows no chip.
+  const showStatus = !!query.sql && query.sql.trim().length > 0;
 
   return (
     <div className="gf-form-group">
@@ -623,15 +494,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
         />
         <div onMouseDown={onResizeMouseDown} className={styles.resizeHandle} />
 
-        {/* One fused rollup indicator. Before a fresh run it shows the PREDICTION
-            ("◷ Will roll up · cube" / "⚠ Won't roll up" / spinning "Checking rollup…");
-            once a result lands for the current SQL it upgrades to the RESULT
-            ("⚡ Rolled up · cube · 12 ms" / "▤ Source · 12 ms"). The instant the SQL
-            is edited the result goes stale and it falls back to a prediction. In Off
-            mode the prediction is suppressed but the post-run result still shows
-            ("▤ Source · 12 ms"). See rollupStatusProps for state selection and the
-            resultFresh staleness guard above. */}
-        {statusProps && <RollupStatus {...statusProps} />}
+        {/* Rollup indicator(s). A PERSISTENT provenance chip is always shown for a
+            non-empty query: "▤ Source · —" before running, morphing IN PLACE to
+            "▤ Source · 12 ms" or "⚡ Rolled up · cube · 12 ms" once a result lands —
+            so it never appears/disappears, just updates. When the query is predicted
+            not to roll up, an amber "⚠ Won't roll up · why" warning sits above it
+            (kept across the run). See rollupStatusProps. */}
+        {showStatus &&
+          statusChips.map((p) => <RollupStatus key={p.id} {...p} />)}
 
         {/* Options — Loki-style Collapse directly under the query, above the
             Macros help. Plain panel colors, inline summary of current values

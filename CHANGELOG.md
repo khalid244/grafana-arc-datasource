@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-06-15
+
+### Changed
+- **The rollup status indicator is now a stable, two-part display instead of one chip that flashed between states.** A persistent *provenance* chip is always shown for a non-empty query: it reads `Source · —` before the query runs and morphs **in place** to `Source · <time>` or `⚡ Rolled up · <cube> · <time>` once a result lands — it no longer appears and disappears as the state changes. When the query is predicted **not** to roll up, an amber `⚠ Won't roll up · <reason>` warning sits **above** it and stays on screen through the run, so the explanation (e.g. "time bucket is under 1h …") remains readable *after* running instead of flashing away with the result.
+
+### Fixed
+- **Eliminated the status-chip flash when editing or clicking out of the query editor.** Three causes: (1) chips were keyed by array index, so the provenance chip reshuffled identity whenever the warning appeared/disappeared — now they use stable role-based keys (`provenance` morphs in place; `warn` mounts/unmounts independently); (2) clicking out re-runs the query, and the chip blinked back to `Source · —` during the reload — the last result is now held while the **same** SQL reloads; (3) the plugin version was unchanged across builds, so Grafana served a cached bundle.
+
+### Internal
+- Extracted the chip-state selection into a pure `src/rollupStatus.tsx` module (mirroring `rollupMode.ts`), unit-tested independently of the editor. Frontend-only release — the Go backend is unchanged from 1.3.4.
+
 ## [1.3.4] - 2026-06-11
 
 ### Changed
