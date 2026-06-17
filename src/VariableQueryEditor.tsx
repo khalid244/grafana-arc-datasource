@@ -4,7 +4,13 @@ import { GrafanaTheme2 } from '@grafana/data';
 import { CodeEditor, useStyles2 } from '@grafana/ui';
 
 interface VariableQuery {
-  query: string;
+  // The editor historically stored SQL in `query`, but the runtime
+  // (datasource.metricFindQuery) reads `sql` first. Accept all shapes so a
+  // variable saved under any field name displays + keeps working.
+  query?: string;
+  sql?: string;
+  rawSql?: string;
+  rawQuery?: boolean;
 }
 
 interface VariableQueryProps {
@@ -16,8 +22,16 @@ export const VariableQueryEditor: React.FC<VariableQueryProps> = ({ query, onCha
   const [state, setState] = useState(query);
   const styles = useStyles2(getStyles);
 
+  // Display the SQL from whichever field an existing variable used. The runtime
+  // reads `sql || query || rawSql`, so a variable saved with SQL only in `sql`
+  // (the panel-target shape) must still render here — no data migration needed.
+  const currentSql = state?.sql || state?.query || state?.rawSql || '';
+
   const saveQuery = (value: string) => {
-    const updated = { ...state, query: value };
+    // Write BOTH `sql` (what metricFindQuery executes at runtime) and `query`
+    // (what this editor re-reads on open) so an edit takes effect AND survives a
+    // reopen. The 2nd onChange arg is Grafana's `definition` display string.
+    const updated = { ...state, query: value, sql: value, rawQuery: true };
     setState(updated);
     onChange(updated, value);
   };
@@ -29,7 +43,7 @@ export const VariableQueryEditor: React.FC<VariableQueryProps> = ({ query, onCha
       </div>
       <CodeEditor
         language="sql"
-        value={state.query || ''}
+        value={currentSql}
         onBlur={saveQuery}
         onSave={saveQuery}
         height="100px"

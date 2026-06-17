@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-06-17
+
+### Fixed
+- **Template/query variables created with SQL in the `sql` field now display and edit correctly.** The variable query editor read/wrote only `query.query`, while the runtime executes `query.sql`, so a variable saved with its SQL in `sql` showed an **empty** editor (and edits made in the UI didn't take effect at runtime). The editor now reads the SQL from whichever field is present (`sql`/`query`/`rawSql`) and writes both `sql` and `query`, so it shows the real query, edits persist, and existing variables keep working — no migration needed.
+
 ## [1.3.5] - 2026-06-15
 
 ### Changed
