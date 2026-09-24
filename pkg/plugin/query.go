@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -429,6 +430,20 @@ func resolveInterval(interval time.Duration, rangeDuration time.Duration) string
 	return calculateInterval(rangeDuration)
 }
 
+// expandInterval substitutes $__interval_ms and $__interval. $__interval_ms
+// MUST go first: a plain ReplaceAll of $__interval would consume its prefix
+// and leave "<interval>_ms" (e.g. "1h_ms"), which is invalid SQL. The
+// millisecond value is derived from the same resolved interval string so the
+// two macros can never disagree within one query.
+func expandInterval(sql string, interval time.Duration, rangeDuration time.Duration) string {
+	resolved := resolveInterval(interval, rangeDuration)
+	if strings.Contains(sql, "$__interval_ms") {
+		ms := int64(intervalToSeconds(resolved)) * 1000
+		sql = strings.ReplaceAll(sql, "$__interval_ms", strconv.FormatInt(ms, 10))
+	}
+	return strings.ReplaceAll(sql, "$__interval", resolved)
+}
+
 // expandTimeFilter replaces $__timeFilter(column) with column >= 'from' AND column < 'to'.
 // Extracts the column name from the macro argument instead of hardcoding 'time'.
 func expandTimeFilter(sql string, from, to time.Time) string {
@@ -474,8 +489,8 @@ func ApplyMacros(sql string, timeRange backend.TimeRange, interval time.Duration
 	// $__timeTo() -> end time
 	sql = strings.ReplaceAll(sql, "$__timeTo()", fmt.Sprintf("'%s'", timeRange.To.Format(time.RFC3339)))
 
-	// $__interval -> the real panel interval, falling back to the range table
-	sql = strings.ReplaceAll(sql, "$__interval", resolveInterval(interval, timeRange.To.Sub(timeRange.From)))
+	// $__interval_ms / $__interval -> the real panel interval, falling back to the range table
+	sql = expandInterval(sql, interval, timeRange.To.Sub(timeRange.From))
 
 	// $__timeGroup(column, interval) -> epoch-based bucketing
 	// DuckDB's date_trunc/time_bucket retains nanosecond residuals on TIMESTAMP_NS columns,
@@ -500,7 +515,7 @@ func ApplyMacrosWithSplit(sql string, chunk backend.TimeRange, originalRange bac
 
 	// $__interval: real panel interval, else the ORIGINAL range decides so
 	// bucket sizes are consistent across all chunks
-	sql = strings.ReplaceAll(sql, "$__interval", resolveInterval(interval, originalRange.To.Sub(originalRange.From)))
+	sql = expandInterval(sql, interval, originalRange.To.Sub(originalRange.From))
 
 	sql = expandTimeGroup(sql)
 
