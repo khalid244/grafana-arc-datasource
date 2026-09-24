@@ -444,6 +444,15 @@ func (d *ArcDatasource) queryInner(ctx context.Context, settings *ArcInstanceSet
 		splitting = false
 	}
 
+	// Skip splitting when a $__timeGroup bucket does not tile the chunk (e.g.
+	// a 1d bucket with 6h chunks): each chunk would emit its own partial row
+	// for the same bucket and the merged frame would carry duplicates.
+	if splitting && !timeGroupBucketsTileChunk(qm.SQL, query.Interval, query.TimeRange.To.Sub(query.TimeRange.From), chunkSize) {
+		log.DefaultLogger.Debug("Skipping split for $__timeGroup bucket wider than or misaligned with the chunk",
+			"refId", qm.RefID, "chunk", chunkSize)
+		splitting = false
+	}
+
 	// Skip splitting for queries without $__timeFilter — the query doesn't use
 	// the time range at all, so splitting would just run it N times.
 	if splitting && !strings.Contains(qm.SQL, "$__timeFilter") && !strings.Contains(qm.SQL, "$__timeFrom") {
@@ -846,6 +855,43 @@ func containsLIMIT(sql string) bool {
 	// Normalize all whitespace to spaces so newlines/tabs before LIMIT are caught
 	normalized := strings.Join(strings.Fields(upper), " ")
 	return strings.Contains(normalized, " LIMIT ")
+}
+
+// timeGroupBucketsTileChunk reports whether every $__timeGroup bucket in sql
+// tiles a split chunk of the given size exactly. Chunks and buckets are both
+// aligned to epoch boundaries, so a bucket is safe iff the chunk is a whole
+// multiple of it. Otherwise a bucket straddles a chunk edge, is aggregated
+// once per chunk it spans, and mergeFrames returns several partial rows that
+// share one timestamp (a 1d bucket over a 4-day range with 6h chunks came back
+// as 16 rows instead of 5). Intervals are resolved exactly as ApplyMacros will
+// resolve them, so $__timeGroup(time, '$__interval') is measured correctly.
+// Queries without $__timeGroup trivially tile.
+func timeGroupBucketsTileChunk(sql string, interval, rangeDuration, chunk time.Duration) bool {
+	chunkSecs := int64(chunk / time.Second)
+	if chunkSecs <= 0 || !strings.Contains(sql, "$__timeGroup(") {
+		return true
+	}
+	sql = expandInterval(sql, interval, rangeDuration)
+	for {
+		idx := strings.Index(sql, "$__timeGroup(")
+		if idx == -1 {
+			return true
+		}
+		rest := sql[idx+len("$__timeGroup("):]
+		end := strings.Index(rest, ")")
+		if end == -1 {
+			return true
+		}
+		// Mirror expandTimeGroup: a malformed call is left unexpanded, so it
+		// buckets nothing and cannot corrupt a split.
+		if parts := strings.SplitN(rest[:end], ",", 2); len(parts) == 2 {
+			secs := int64(intervalToSeconds(strings.Trim(strings.TrimSpace(parts[1]), "'\"")))
+			if secs <= 0 || chunkSecs%secs != 0 {
+				return false
+			}
+		}
+		sql = rest[end+1:]
+	}
 }
 
 // containsAggregationWithoutTimeGroup returns true if the SQL has aggregation
