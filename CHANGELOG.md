@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-09-24
+
+### Fixed
+- **Failed variable queries no longer turn "All" into `IN ()`.** A variable query that errored or was cancelled returned zero options with no error, so an All selection interpolated to `IN ()` and every panel failed with `Parser Error: syntax error at or near ")"`. Variable query errors now surface on the variable, and an empty multi-value selection renders as `NULL` (valid SQL, no rows).
+- **`$__interval_ms` expands correctly.** `$__interval` was replaced first, so `$__interval_ms` became e.g. `1h_ms`. It now expands to the interval in milliseconds, from the same resolved interval as `$__interval`.
+- **Split queries no longer return duplicate partial buckets.** When a `$__timeGroup` bucket did not evenly tile the split chunk (e.g. a 1d bucket over 6h chunks), each chunk aggregated its slice and the merge returned several rows sharing one timestamp (a 1d bucket over 4 days returned 16 rows instead of 5). Such queries now run unsplit.
+
 ## [1.3.6] - 2026-06-17
 
 ### Fixed
