@@ -655,8 +655,12 @@ func (d *ArcDatasource) CheckHealth(ctx context.Context, req *backend.CheckHealt
 		}, nil
 	}
 
-	// Test connection with simple query
-	testSQL := "SHOW DATABASES"
+	// Test connection with a trivial query. This MUST be a SELECT, not a SHOW
+	// command: Arc's Arrow endpoint (/api/v1/query/arrow) rejects SHOW DATABASES/
+	// SHOW TABLES with HTTP 400 ("use /api/v1/query instead") since the SHOW-command
+	// RBAC-gating change (arc commit 4999df7). SELECT 1 validates connectivity and
+	// the query engine over the same arrow path the plugin uses for real queries.
+	testSQL := "SELECT 1"
 	_, err = QueryArrow(ctx, settings, testSQL, backend.TimeRange{
 		From: time.Now().Add(-1 * time.Hour),
 		To:   time.Now(),

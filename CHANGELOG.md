@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.8] - 2026-09-24
+
+### Fixed
+- **Datasource health check works against current Arc again.** `CheckHealth` probes with `SELECT 1` instead of `SHOW DATABASES`, which Arc's Arrow endpoint rejects with HTTP 400 ("use /api/v1/query instead"). This fix shipped in an earlier 1.3.6 build but never reached `main`, so 1.3.7 regressed it. Panel queries were unaffected.
+
 ## [1.3.7] - 2026-09-24
 
 ### Fixed
