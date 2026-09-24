@@ -57,6 +57,12 @@ export class ArcDataSource extends DataSourceWithBackend<ArcQuery, ArcDataSource
   }
 
   toMetricFindValue(rsp: DataQueryResponse): MetricFindValue[] {
+    // Surface query errors so Grafana marks the variable as failed; returning []
+    // here would silently empty an "All" selection and render `IN ()`.
+    const err = rsp.errors?.[0] ?? rsp.error;
+    if (err) {
+      throw new Error(err.message || 'Variable query failed');
+    }
     const data = rsp.data ?? [];
     // Create MetricFindValue object for all frames
     const values = data.map((d) => frameToMetricFindValue(d)).flat();
@@ -86,6 +92,11 @@ export class ArcDataSource extends DataSourceWithBackend<ArcQuery, ArcDataSource
     }
 
     if (Array.isArray(value)) {
+      // An empty selection (e.g. "All" with no options loaded) would produce
+      // `IN ()`, a syntax error; NULL keeps the SQL valid and matches no rows.
+      if (value.length === 0) {
+        return 'NULL';
+      }
       const quotedValues = value.map((v) => this.quoteLiteral(v));
       return quotedValues.join(',');
     }

@@ -53,3 +53,33 @@ describe('explainRollup', () => {
     expect(mockPost.mock.calls[0][1].sql).toBe('GROUP BY $__interval');
   });
 });
+
+describe('interpolateVariable', () => {
+  const ds = new ArcDataSource({} as any);
+
+  it('renders an empty multi-value selection as NULL so IN (...) stays valid SQL', () => {
+    expect(ds.interpolateVariable([], { multi: true, includeAll: true } as any)).toBe('NULL');
+  });
+
+  it('still quotes and joins non-empty selections', () => {
+    expect(ds.interpolateVariable(["a", "it's"], { multi: true } as any)).toBe("'a','it''s'");
+  });
+});
+
+describe('toMetricFindValue', () => {
+  const ds = new ArcDataSource({} as any);
+
+  it('throws when the variable query returned errors instead of yielding zero options', () => {
+    expect(() => ds.toMetricFindValue({ data: [], errors: [{ message: 'Arc error (HTTP 500)' }] } as any)).toThrow(
+      'Arc error (HTTP 500)'
+    );
+  });
+
+  it('throws on the legacy single error field', () => {
+    expect(() => ds.toMetricFindValue({ data: [], error: { message: 'boom' } } as any)).toThrow('boom');
+  });
+
+  it('returns an empty list for a successful empty result', () => {
+    expect(ds.toMetricFindValue({ data: [] } as any)).toEqual([]);
+  });
+});
