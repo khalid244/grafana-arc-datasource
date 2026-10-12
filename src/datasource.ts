@@ -47,6 +47,11 @@ export class ArcDataSource extends DataSourceWithBackend<ArcQuery, ArcDataSource
       format: 'table',
       rawQuery: true,
     };
+    // A variable query can opt into a rollup mode (e.g. "only" for a cube-only
+    // dropdown); unset keeps the backend default (auto).
+    if (query && typeof query === 'object' && query.rollupMode) {
+      target.rollupMode = query.rollupMode;
+    }
 
     return lastValueFrom(
       super.query({

@@ -5,6 +5,7 @@ import { CodeEditor, Collapse, Icon, InlineField, Input, RadioButtonGroup, Selec
 import { ArcDataSource } from './datasource';
 import { ArcDataSourceOptions, ArcQuery } from './types';
 import { effectiveRollupMode } from './rollupMode';
+import { querySql, withSql } from './querySql';
 import { rollupStatusProps, type RollupStatusProps } from './rollupStatus';
 
 type Props = QueryEditorProps<ArcDataSource, ArcQuery, ArcDataSourceOptions>;
@@ -247,10 +248,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
     queryRef.current = query;
   }, [query]);
 
+  // The SQL the backend runs: `sql`, else `rawSql` (see querySql.ts).
+  const sql = querySql(query);
+
   // Migrate rawSql from Postgres/MySQL/MSSQL/ClickHouse datasources
   useEffect(() => {
     if (!query.sql && query.rawSql) {
-      onChange({ ...query, sql: query.rawSql, rawSql: undefined });
+      onChange(withSql(query, query.rawSql));
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -261,13 +265,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
 
   // Fetch columns when SQL references a table
   useEffect(() => {
-    const match = query.sql?.match(/\bFROM\s+(?:(\w+)\.)?(\w+)/i);
+    const match = sql.match(/\bFROM\s+(?:(\w+)\.)?(\w+)/i);
     if (match) {
       const table = match[2];
       const db = match[1] || query.database;
       datasource.getColumns(table, db).then(setColumns).catch(() => {});
     }
-  }, [datasource, query.sql, query.database]);
+  }, [datasource, sql, query.database]);
 
   // Pre-run rollup check, debounced. Uses the panel's current time range because
   // the answer is range-dependent ($__interval picks the bucket grain). Disabled
@@ -278,7 +282,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
   // grain the query runs at, independent of how $__interval resolves in the editor.
   const intervalMs = data?.request?.intervalMs;
   useEffect(() => {
-    const sql = query.sql;
     // Use the same tolerant decoding as the displayed mode so a legacy panel saved
     // with rollup: "off" (string) skips the explain call too — not just the strict
     // boolean false. When off, the query deliberately hits source, so there's
@@ -314,10 +317,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
         .finally(() => setRollupChecking(false));
     }, 400);
     return () => clearTimeout(t);
-  }, [datasource, query.sql, query.rollup, query.rollupMode, query.database, fromMs, toMs, intervalMs]);
+  }, [datasource, sql, query.rollup, query.rollupMode, query.database, fromMs, toMs, intervalMs]);
 
   const onSQLEdit = useCallback((value: string) => {
-    onChange({ ...queryRef.current, sql: value });
+    onChange(withSql(queryRef.current, value));
   }, [onChange]);
 
   // onChange queues a React state update; onRunQuery runs synchronously and
@@ -329,12 +332,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
   }, [onRunQuery]);
 
   const onSQLBlur = useCallback((value: string) => {
-    onChange({ ...queryRef.current, sql: value });
+    onChange(withSql(queryRef.current, value));
     runAfterChange();
   }, [onChange, runAfterChange]);
 
   const onRunQueryFromEditor = useCallback((value: string) => {
-    onChange({ ...queryRef.current, sql: value });
+    onChange(withSql(queryRef.current, value));
     runAfterChange();
   }, [onChange, runAfterChange]);
 
@@ -370,7 +373,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
       run: () => {
         const value = editor.getValue();
-        onChange({ ...queryRef.current, sql: value });
+        onChange(withSql(queryRef.current, value));
         runAfterChange();
       },
     });
@@ -423,7 +426,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
   const executedTarget = data?.request?.targets?.find((t) => t.refId === query.refId) as
     | { sql?: string }
     | undefined;
-  const currentSql = (query.sql ?? '').trim();
+  const currentSql = sql.trim();
 
   // A result is "fresh now" only when the run is Done AND its SQL still matches the
   // editor. But clicking out of the editor RE-RUNS the same query, and during the
@@ -467,7 +470,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
     rollupChecking: rollupOff ? false : rollupChecking,
   });
   // Only describe a query that actually has SQL — an empty editor shows no chip.
-  const showStatus = !!query.sql && query.sql.trim().length > 0;
+  const showStatus = sql.trim().length > 0;
 
   return (
     <div className="gf-form-group">
@@ -481,7 +484,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, data, ran
       <div className={styles.column}>
         <CodeEditor
           language="sql"
-          value={query.sql || ''}
+          value={sql}
           onChange={onSQLEdit}
           onBlur={onSQLBlur}
           onSave={onRunQueryFromEditor}

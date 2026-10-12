@@ -11,6 +11,9 @@ interface VariableQuery {
   sql?: string;
   rawSql?: string;
   rawQuery?: boolean;
+  // Set in the dashboard JSON (no editor control yet); kept across edits by the
+  // spread in saveQuery and forwarded by metricFindQuery.
+  rollupMode?: 'auto' | 'only' | 'off';
 }
 
 interface VariableQueryProps {

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.9] - 2026-10-12
+
+### Fixed
+- **Panels stored with `rawSql` now show their SQL in the query editor.** Panels migrated from Postgres/MySQL/MSSQL/ClickHouse keep their query in `rawSql` instead of `sql`. The backend already ran `rawSql` when `sql` was empty, but the editor only displayed `sql`, so these panels returned data while the editor looked empty. The editor now shows `sql`, falling back to `rawSql` (the backend's order), and an edit saves to `sql` and clears `rawSql` so the two can't drift apart.
+
+### Added
+- **Variable queries can set `rollupMode`.** A query variable whose JSON includes `"rollupMode": "only"` (or `"off"`) now runs in that mode; previously variables always ran in `auto`. A cube-only dropdown skips the raw scan of data newer than the cube (e.g. 4.4s → 0.1s for a survey-name list). Unset keeps `auto`. There is no editor control yet; set it in the dashboard JSON.
+
 ## [1.3.8] - 2026-09-24
 
 ### Fixed

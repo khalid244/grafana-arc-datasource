@@ -1,7 +1,9 @@
+import { of } from 'rxjs';
 import { ArcDataSource } from './datasource';
 
 const mockPost = jest.fn().mockResolvedValue({ supported: true, cube: 'by_event' });
 const mockReplace = jest.fn((sql: string) => sql);
+const mockQuery = jest.fn((_req: any) => of({ data: [] }));
 
 jest.mock('@grafana/runtime', () => ({
   getBackendSrv: () => ({ post: mockPost, get: jest.fn() }),
@@ -9,8 +11,32 @@ jest.mock('@grafana/runtime', () => ({
   frameToMetricFindValue: jest.fn(),
   DataSourceWithBackend: class {
     uid = 'test-uid';
+    query(req: any) {
+      return mockQuery(req);
+    }
   },
 }));
+
+describe('metricFindQuery', () => {
+  const ds = new ArcDataSource({} as any);
+
+  beforeEach(() => mockQuery.mockClear());
+
+  it('forwards the variable query rollupMode so a dropdown can run cube-only', async () => {
+    await ds.metricFindQuery({ sql: 'SELECT 1', rollupMode: 'only' }, { range: {} });
+    expect(mockQuery.mock.calls[0][0].targets[0].rollupMode).toBe('only');
+  });
+
+  it('leaves rollupMode unset (auto) when the variable query does not set it', async () => {
+    await ds.metricFindQuery({ sql: 'SELECT 1' });
+    expect(mockQuery.mock.calls[0][0].targets[0]).not.toHaveProperty('rollupMode');
+  });
+
+  it('leaves rollupMode unset (auto) for a plain string query', async () => {
+    await ds.metricFindQuery('SELECT 1');
+    expect(mockQuery.mock.calls[0][0].targets[0]).not.toHaveProperty('rollupMode');
+  });
+});
 
 describe('explainRollup', () => {
   const ds = new ArcDataSource({} as any);
