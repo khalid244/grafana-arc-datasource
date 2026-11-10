@@ -55,6 +55,7 @@ func QueryArrowFlightSQLStyle(ctx context.Context, settings *ArcInstanceSettings
 	case "only":
 		req.Header.Set("X-Arc-Rollup-Only", "true")
 	}
+	setTailFallbackHeaders(req, settings.settings, rollupMode)
 
 	// Execute request
 	client := &http.Client{
@@ -106,13 +107,19 @@ func QueryArrowFlightSQLStyle(ctx context.Context, settings *ArcInstanceSettings
 	)
 
 	// Add metadata
+	custom := map[string]interface{}{
+		"executionTime": totalDuration.Milliseconds(),
+		"servedBy":      servedBy,
+		"rollupCube":    cube,
+	}
+	// Arc served the cube-only result because today's raw tail failed or was too slow.
+	if pf, pt, ok := parseArcPartial(resp.Header.Get("X-Arc-Partial")); ok {
+		custom[partialFromKey] = pf
+		custom[partialToKey] = pt
+	}
 	frame.Meta = &data.FrameMeta{
 		ExecutedQueryString: sql,
-		Custom: map[string]interface{}{
-			"executionTime": totalDuration.Milliseconds(),
-			"servedBy":      servedBy,
-			"rollupCube":    cube,
-		},
+		Custom:              custom,
 	}
 
 	return frame, nil

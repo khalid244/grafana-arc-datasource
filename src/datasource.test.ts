@@ -1,4 +1,4 @@
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { ArcDataSource } from './datasource';
 
 const mockPost = jest.fn().mockResolvedValue({ supported: true, cube: 'by_event' });
@@ -35,6 +35,35 @@ describe('metricFindQuery', () => {
   it('leaves rollupMode unset (auto) for a plain string query', async () => {
     await ds.metricFindQuery('SELECT 1');
     expect(mockQuery.mock.calls[0][0].targets[0]).not.toHaveProperty('rollupMode');
+  });
+
+  it('rejects with the backend error so Grafana marks the variable as failed', async () => {
+    mockQuery.mockReturnValueOnce(
+      of({ data: [], errors: [{ refId: 'metricFindQuery', message: 'Arc error (HTTP 500): Parser Error' }] } as any)
+    );
+    await expect(ds.metricFindQuery({ sql: 'SELECT DISTINCT os_name FROM posthog.events' })).rejects.toThrow(
+      'Arc error (HTTP 500): Parser Error'
+    );
+  });
+
+  it('rejects when the request itself failed or was cancelled (fetch-level error only)', async () => {
+    mockQuery.mockReturnValueOnce(of({ data: [], error: { message: 'Query error: -1 Request was aborted' } } as any));
+    await expect(ds.metricFindQuery('SELECT 1')).rejects.toThrow('Request was aborted');
+  });
+
+  it('rejects with a generic message when the error carries none', async () => {
+    mockQuery.mockReturnValueOnce(of({ data: [], errors: [{}] } as any));
+    await expect(ds.metricFindQuery('SELECT 1')).rejects.toThrow('Variable query failed');
+  });
+
+  it('rejects when the query observable errors instead of emitting', async () => {
+    mockQuery.mockReturnValueOnce(throwError(() => new Error('network down')));
+    await expect(ds.metricFindQuery('SELECT 1')).rejects.toThrow('network down');
+  });
+
+  it('resolves to [] for a legitimately empty, error-free result', async () => {
+    mockQuery.mockReturnValueOnce(of({ data: [] }));
+    await expect(ds.metricFindQuery('SELECT 1')).resolves.toEqual([]);
   });
 });
 

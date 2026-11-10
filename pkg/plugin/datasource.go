@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +25,8 @@ type ArcDataSourceSettings struct {
 	Timeout        int    `json:"timeout"` // seconds
 	UseArrow       bool   `json:"useArrow"`
 	MaxConcurrency int    `json:"maxConcurrency"` // max parallel chunks for query splitting (default 4)
+	TailFallback   bool   `json:"tailFallback"`   // ask Arc to degrade to cube-only when today's raw tail is too slow (auto rollup mode only)
+	TailDeadlineMs int    `json:"tailDeadlineMs"` // tail read budget sent with the fallback header (default 10000)
 }
 
 // ArcQuery represents a query to Arc
@@ -118,6 +123,9 @@ func getSettings(ctx context.Context, pluginCtx backend.PluginContext) (*ArcInst
 	}
 	if dsSettings.MaxConcurrency <= 0 {
 		dsSettings.MaxConcurrency = 4
+	}
+	if dsSettings.TailDeadlineMs <= 0 {
+		dsSettings.TailDeadlineMs = 10000
 	}
 	// Note: UseArrow defaults to false in Go struct initialization
 	// The frontend defaults to true in the UI (ConfigEditor.tsx line 145)
@@ -263,73 +271,192 @@ func (d *ArcDatasource) executeChunk(ctx context.Context, settings *ArcInstanceS
 }
 
 // mergeFrames appends rows from all chunk frames into a single frame.
-// Skips frames with incompatible schemas (different field count) to avoid panics.
-// Pre-allocates capacity to avoid O(n²) re-allocation from row-by-row appends.
-func mergeFrames(frames []*data.Frame) *data.Frame {
+//
+// Each column's type is decided across all chunks, not by the first one: the
+// JSON path types an all-NULL column as string, so a chunk where a numeric
+// column happened to be all NULL must not decide the type. The base type comes
+// from the first chunk with a non-null value in the column; all-NULL chunks
+// contribute nulls. Numeric types of different width/kind widen (int64 + float64
+// -> float64). A column nullable in any chunk (or filled with nulls from an
+// all-NULL chunk) is nullable in the result. Genuinely incompatible types (or
+// column counts) return an error naming the column and chunks instead of
+// dropping data. Chunks with no fields (empty results) are skipped.
+func mergeFrames(frames []*data.Frame) (*data.Frame, error) {
 	if len(frames) == 0 {
-		return nil
+		return nil, nil
 	}
 	if len(frames) == 1 {
-		return frames[0]
+		return frames[0], nil
 	}
 
-	// Find the first non-empty frame to use as the base
-	var merged *data.Frame
-	var startIdx int
+	type chunk struct {
+		frame *data.Frame
+		rows  int
+		pos   int // 1-based position in the input, for error messages
+	}
+	var chunks []chunk
 	for i, f := range frames {
-		if f != nil && len(f.Fields) > 0 {
-			merged = f
-			startIdx = i + 1
-			break
-		}
-	}
-	if merged == nil {
-		return frames[0]
-	}
-
-	expectedFields := len(merged.Fields)
-
-	// Count total rows to add so we can pre-allocate
-	additionalRows := 0
-	for _, f := range frames[startIdx:] {
-		if f == nil || len(f.Fields) != expectedFields {
+		if f == nil || len(f.Fields) == 0 {
 			continue
 		}
-		rowLen, err := f.RowLen()
+		rows, err := f.RowLen()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("chunk %d has columns of unequal length: %w", i+1, err)
 		}
-		additionalRows += rowLen
+		chunks = append(chunks, chunk{frame: f, rows: rows, pos: i + 1})
+	}
+	if len(chunks) == 0 {
+		return frames[0], nil
 	}
 
-	if additionalRows == 0 {
-		return merged
-	}
-
-	// Pre-extend all fields to avoid repeated re-allocation
-	baseRows := merged.Rows()
-	for _, field := range merged.Fields {
-		field.Extend(additionalRows)
-	}
-
-	// Copy data using Set (single allocation, no per-row realloc)
-	writeIdx := baseRows
-	for _, f := range frames[startIdx:] {
-		if f == nil || len(f.Fields) != expectedFields {
-			continue
+	base := chunks[0].frame
+	nCols := len(base.Fields)
+	totalRows := 0
+	for _, c := range chunks {
+		if len(c.frame.Fields) != nCols {
+			return nil, fmt.Errorf("cannot merge split-query chunks: chunk %d has %d columns but chunk %d has %d", chunks[0].pos, nCols, c.pos, len(c.frame.Fields))
 		}
-		rowLen, err := f.RowLen()
+		totalRows += c.rows
+	}
+	if len(chunks) == 1 {
+		return base, nil
+	}
+
+	merged := data.NewFrame(base.Name)
+	merged.RefID = base.RefID
+	for col := 0; col < nCols; col++ {
+		fields := make([]*data.Field, len(chunks))
+		positions := make([]int, len(chunks))
+		for i, c := range chunks {
+			fields[i], positions[i] = c.frame.Fields[col], c.pos
+		}
+		target, nullable, err := resolveColumnType(fields, positions)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		for i := 0; i < rowLen; i++ {
-			for fieldIdx := 0; fieldIdx < expectedFields; fieldIdx++ {
-				merged.Fields[fieldIdx].Set(writeIdx, f.Fields[fieldIdx].CopyAt(i))
+		ft := target
+		if nullable {
+			ft = target.NullableType()
+		}
+		dst := data.NewFieldFromFieldType(ft, totalRows)
+		dst.Name = base.Fields[col].Name
+		dst.Labels = base.Fields[col].Labels
+		dst.Config = base.Fields[col].Config
+
+		w := 0
+		for _, c := range chunks {
+			src := c.frame.Fields[col]
+			for i := 0; i < c.rows; i++ {
+				v, ok := src.ConcreteAt(i)
+				if ok {
+					cv, err := convertConcrete(v, target)
+					if err != nil {
+						return nil, fmt.Errorf("cannot merge split-query chunks: column %q chunk %d: %w", dst.Name, c.pos, err)
+					}
+					if nullable {
+						p := reflect.New(reflect.TypeOf(cv))
+						p.Elem().Set(reflect.ValueOf(cv))
+						cv = p.Interface()
+					}
+					dst.Set(w, cv)
+				}
+				w++
 			}
-			writeIdx++
 		}
+		merged.Fields = append(merged.Fields, dst)
 	}
-	return merged
+	return merged, nil
+}
+
+// resolveColumnType picks the merged type of column col from the fields of every
+// chunk (positions are the chunks' 1-based indexes) and whether it must be nullable.
+func resolveColumnType(fields []*data.Field, positions []int) (data.FieldType, bool, error) {
+	var (
+		target   data.FieldType
+		haveType bool
+		typePos  int
+		nullable bool
+	)
+	for n, f := range fields {
+		pos := positions[n]
+		hasValue := false
+		for i := 0; i < f.Len(); i++ {
+			if _, ok := f.ConcreteAt(i); ok {
+				hasValue = true
+				break
+			}
+		}
+		if f.Len() > 0 && (f.Nullable() || !hasValue) {
+			nullable = true
+		}
+		if !hasValue {
+			continue
+		}
+		t := f.Type().NonNullableType()
+		if !haveType {
+			target, haveType, typePos = t, true, pos
+			continue
+		}
+		if t == target {
+			continue
+		}
+		wide, ok := widenNumeric(target, t)
+		if !ok {
+			return 0, false, fmt.Errorf("cannot merge split-query chunks: column %q has type %s in chunk %d but %s in chunk %d", f.Name, target.ItemTypeString(), typePos, t.ItemTypeString(), pos)
+		}
+		target = wide
+	}
+	if !haveType {
+		target = fields[0].Type().NonNullableType()
+	}
+	return target, nullable, nil
+}
+
+func numericRank(t data.FieldType) (kind string, ok bool) {
+	switch t {
+	case data.FieldTypeInt8, data.FieldTypeInt16, data.FieldTypeInt32, data.FieldTypeInt64:
+		return "int", true
+	case data.FieldTypeUint8, data.FieldTypeUint16, data.FieldTypeUint32, data.FieldTypeUint64:
+		return "uint", true
+	case data.FieldTypeFloat32, data.FieldTypeFloat64:
+		return "float", true
+	}
+	return "", false
+}
+
+// widenNumeric returns the type both numeric types fit in; ok is false when
+// either is not numeric. Mixed signed/unsigned and anything with a float widen
+// to float64 (lossy above 2^53, acceptable for chart values).
+func widenNumeric(a, b data.FieldType) (data.FieldType, bool) {
+	ka, oka := numericRank(a)
+	kb, okb := numericRank(b)
+	if !oka || !okb {
+		return 0, false
+	}
+	switch {
+	case ka == "int" && kb == "int":
+		return data.FieldTypeInt64, true
+	case ka == "uint" && kb == "uint":
+		return data.FieldTypeUint64, true
+	}
+	return data.FieldTypeFloat64, true
+}
+
+// convertConcrete converts a non-null value to the Go type of target.
+func convertConcrete(v interface{}, target data.FieldType) (interface{}, error) {
+	rv := reflect.ValueOf(v)
+	elem := reflect.TypeOf(data.NewFieldFromFieldType(target, 1).At(0))
+	if rv.Type() == elem {
+		return v, nil
+	}
+	if rv.Type().ConvertibleTo(elem) && isNumericKind(rv.Kind()) && isNumericKind(elem.Kind()) {
+		return rv.Convert(elem).Interface(), nil
+	}
+	return nil, fmt.Errorf("value of type %s does not fit %s", rv.Type(), elem)
+}
+
+func isNumericKind(k reflect.Kind) bool {
+	return k >= reflect.Int && k <= reflect.Float64
 }
 
 // mergeChunkMeta builds the merged frame's Custom meta from the per-chunk frames
@@ -363,7 +490,148 @@ func mergeChunkMeta(frames []*data.Frame, numChunks int) map[string]interface{} 
 		}
 		break
 	}
+	// A partial (tail-missing) chunk makes the whole panel partial: report the
+	// missing windows once. Overlapping windows merge; disjoint ones stay
+	// separate so the notice does not claim the gap between them is missing.
+	type span struct {
+		from, to   time.Time
+		fromS, toS string
+	}
+	var spans []span
+	for _, f := range frames {
+		pf, pt, ok := partialFromMeta(f)
+		if !ok {
+			continue
+		}
+		ft, err1 := parseArcTime(pf)
+		tt, err2 := parseArcTime(pt)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		spans = append(spans, span{ft, tt, pf, pt})
+	}
+	if len(spans) == 0 {
+		return custom
+	}
+	sort.SliceStable(spans, func(i, j int) bool { return spans[i].from.Before(spans[j].from) })
+	merged := []span{spans[0]}
+	for _, sp := range spans[1:] {
+		last := &merged[len(merged)-1]
+		if sp.from.After(last.to) {
+			merged = append(merged, sp)
+			continue
+		}
+		if sp.to.After(last.to) {
+			last.to, last.toS = sp.to, sp.toS
+		}
+	}
+	custom[partialFromKey] = merged[0].fromS
+	custom[partialToKey] = merged[len(merged)-1].toS
+	if len(merged) > 1 {
+		windows := make([]string, len(merged))
+		for i, sp := range merged {
+			windows[i] = sp.fromS + " to " + sp.toS
+		}
+		custom[partialSpansKey] = windows
+	}
 	return custom
+}
+
+const (
+	partialFromKey  = "partialFrom"
+	partialToKey    = "partialTo"
+	partialSpansKey = "partialSpans"
+)
+
+// parseArcTime parses an RFC3339 timestamp of any fractional precision.
+func parseArcTime(s string) (time.Time, error) {
+	return time.Parse(time.RFC3339Nano, s)
+}
+
+func partialFromMeta(f *data.Frame) (from, to string, ok bool) {
+	if f == nil || f.Meta == nil {
+		return "", "", false
+	}
+	c, isMap := f.Meta.Custom.(map[string]interface{})
+	if !isMap {
+		return "", "", false
+	}
+	from, _ = c[partialFromKey].(string)
+	to, _ = c[partialToKey].(string)
+	return from, to, from != ""
+}
+
+// partialSpansMeta returns the separate missing windows when a split query had
+// disjoint partial chunks; nil when the missing data is one window.
+func partialSpansMeta(f *data.Frame) []string {
+	if f == nil || f.Meta == nil {
+		return nil
+	}
+	c, _ := f.Meta.Custom.(map[string]interface{})
+	spans, _ := c[partialSpansKey].([]string)
+	return spans
+}
+
+// parseArcPartial parses `X-Arc-Partial: tail-missing; from=<ts>; to=<ts>`.
+// Unparseable timestamps are rejected: no notice from garbage.
+func parseArcPartial(h string) (from, to string, ok bool) {
+	parts := strings.Split(h, ";")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) != "tail-missing" {
+		return "", "", false
+	}
+	for _, p := range parts[1:] {
+		k, v, found := strings.Cut(strings.TrimSpace(p), "=")
+		if !found {
+			continue
+		}
+		switch k {
+		case "from":
+			from = strings.TrimSpace(v)
+		case "to":
+			to = strings.TrimSpace(v)
+		}
+	}
+	if from == "" || to == "" {
+		return "", "", false
+	}
+	if _, err := parseArcTime(from); err != nil {
+		return "", "", false
+	}
+	if _, err := parseArcTime(to); err != nil {
+		return "", "", false
+	}
+	return from, to, true
+}
+
+// setTailFallbackHeaders opts a request into Arc's cube-only degrade. Only auto
+// mode has a raw tail to degrade; only/off never read one.
+func setTailFallbackHeaders(req *http.Request, s ArcDataSourceSettings, rollupMode string) {
+	if !s.TailFallback || rollupMode != "auto" {
+		return
+	}
+	req.Header.Set("X-Arc-Tail-Fallback", "cube-only")
+	if s.TailDeadlineMs > 0 {
+		req.Header.Set("X-Arc-Tail-Deadline-Ms", strconv.Itoa(s.TailDeadlineMs))
+	}
+}
+
+// addPartialNotice attaches one warning to the first returned frame when Arc
+// reported the raw tail missing.
+func addPartialNotice(frames data.Frames, from, to string, windows []string) {
+	if from == "" || len(frames) == 0 || frames[0] == nil {
+		return
+	}
+	if frames[0].Meta == nil {
+		frames[0].Meta = &data.FrameMeta{}
+	}
+	text := fmt.Sprintf("Data from %s to %s is missing: today's raw data was too slow to read; showing data up to the last complete day.", from, to)
+	if len(windows) > 1 {
+		text = fmt.Sprintf("Data in %d separate windows is missing (%s): today's raw data was too slow to read; showing data up to the last complete day.", len(windows), strings.Join(windows, "; "))
+	}
+	frames[0].Meta.Notices = append(frames[0].Meta.Notices, data.Notice{
+		Severity: data.NoticeSeverityWarning,
+		Text:     text,
+	})
 }
 
 // stampExecutionTime overwrites every frame's meta executionTime with the
@@ -393,9 +661,22 @@ func stampExecutionTime(frames data.Frames, elapsed time.Duration) {
 // frames' meta (see stampExecutionTime for why it overrides per-chunk values).
 func (d *ArcDatasource) query(ctx context.Context, settings *ArcInstanceSettings, query backend.DataQuery) backend.DataResponse {
 	startedAt := time.Now()
-	response := d.queryInner(ctx, settings, query)
+	response := d.safeQueryInner(ctx, settings, query)
 	stampExecutionTime(response.Frames, time.Since(startedAt))
 	return response
+}
+
+// safeQueryInner turns a panic anywhere in query handling (merge, frame
+// preparation, ...) into a per-query error. An unrecovered panic on this
+// goroutine kills the plugin process and every Arc panel shows "plugin unavailable".
+func (d *ArcDatasource) safeQueryInner(ctx context.Context, settings *ArcInstanceSettings, query backend.DataQuery) (response backend.DataResponse) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Error("Recovered panic in query", "refId", query.RefID, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			response = backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("internal error while processing query: %v", r))
+		}
+	}()
+	return d.queryInner(ctx, settings, query)
 }
 
 // queryInner executes a single query, with optional time-range splitting for large ranges
@@ -550,7 +831,11 @@ func (d *ArcDatasource) queryInner(ctx context.Context, settings *ArcInstanceSet
 		}
 	}
 
-	merged := mergeFrames(orderedFrames)
+	merged, mergeErr := mergeFrames(orderedFrames)
+	if mergeErr != nil {
+		log.DefaultLogger.Error("Split query chunks cannot be merged", "refId", qm.RefID, "error", mergeErr)
+		return backend.ErrDataResponse(backend.StatusInternal, mergeErr.Error())
+	}
 	if merged == nil {
 		log.DefaultLogger.Warn("No data from split query", "refId", qm.RefID)
 		return response
@@ -572,6 +857,9 @@ func (d *ArcDatasource) queryInner(ctx context.Context, settings *ArcInstanceSet
 	}
 
 	response.Frames = append(response.Frames, processedFrames...)
+	if pf, pt, ok := partialFromMeta(merged); ok {
+		addPartialNotice(response.Frames, pf, pt, partialSpansMeta(merged))
+	}
 
 	log.DefaultLogger.Info("Split query completed",
 		"refId", qm.RefID,
@@ -629,6 +917,9 @@ func (d *ArcDatasource) querySingle(ctx context.Context, settings *ArcInstanceSe
 	}
 
 	response.Frames = append(response.Frames, processedFrames...)
+	if pf, pt, ok := partialFromMeta(frame); ok {
+		addPartialNotice(response.Frames, pf, pt, nil)
+	}
 
 	log.DefaultLogger.Debug("Returning query response",
 		"refId", qm.RefID,

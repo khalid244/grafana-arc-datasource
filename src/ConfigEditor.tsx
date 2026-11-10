@@ -3,6 +3,7 @@ import { InlineField, Input, SecretInput, Switch, useStyles2 } from '@grafana/ui
 import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { css } from '@emotion/css';
 import { ArcDataSourceOptions, ArcSecureJsonData } from './types';
+import { TAIL_DEADLINE_DEFAULT_MS, TAIL_FALLBACK_DEFAULT, normalizeTailDeadline } from './tailFallback';
 
 interface Props extends DataSourcePluginOptionsEditorProps<ArcDataSourceOptions, ArcSecureJsonData> {}
 
@@ -58,6 +59,22 @@ export function ConfigEditor(props: Props) {
 
   const onUseArrowChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({ ...options, jsonData: { ...jsonData, useArrow: event.target.checked } });
+  };
+
+  const onTailFallbackChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({ ...options, jsonData: { ...jsonData, tailFallback: event.target.checked } });
+  };
+
+  const onTailDeadlineChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const parsed = parseInt(event.target.value, 10);
+    onOptionsChange({ ...options, jsonData: { ...jsonData, tailDeadlineMs: isNaN(parsed) ? undefined : parsed } });
+  };
+
+  const onTailDeadlineBlur = () => {
+    const next = normalizeTailDeadline(jsonData.tailDeadlineMs);
+    if (next !== jsonData.tailDeadlineMs) {
+      onOptionsChange({ ...options, jsonData: { ...jsonData, tailDeadlineMs: next } });
+    }
   };
 
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -150,6 +167,38 @@ export function ConfigEditor(props: Props) {
           <Switch value={jsonData.useArrow ?? true} onChange={onUseArrowChange} />
         </div>
       </InlineField>
+
+      <InlineField
+        label="Cube-only fallback"
+        labelWidth={LABEL_WIDTH}
+        tooltip="In Auto rollup mode, if reading today's raw data is too slow or fails, show the rollup data up to the last complete day (with a warning) instead of timing out. Requires an Arc version that supports it; ignored for Only/Off rollup queries."
+      >
+        <div className={styles.switchCell}>
+          <Switch
+            aria-label="Cube-only fallback"
+            value={jsonData.tailFallback ?? TAIL_FALLBACK_DEFAULT}
+            onChange={onTailFallbackChange}
+          />
+        </div>
+      </InlineField>
+
+      {jsonData.tailFallback && (
+        <InlineField
+          label="Tail deadline (ms)"
+          labelWidth={LABEL_WIDTH}
+          tooltip="How long Arc may spend reading today's raw data before it falls back to rollup data only."
+        >
+          <Input
+            width={INPUT_WIDTH}
+            type="number"
+            aria-label="Tail deadline (ms)"
+            value={jsonData.tailDeadlineMs ?? ''}
+            placeholder={String(TAIL_DEADLINE_DEFAULT_MS)}
+            onChange={onTailDeadlineChange}
+            onBlur={onTailDeadlineBlur}
+          />
+        </InlineField>
+      )}
     </div>
   );
 }

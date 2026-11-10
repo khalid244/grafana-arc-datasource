@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.11] - 2026-11-10
+
+### Fixed
+- **A NULL in a day-chunked time series no longer takes the plugin down.** When one chunk contained a NULL (nullable column) and another did not, `mergeFrames` appended a pointer value to a non-nullable vector and panicked outside any `recover()`, so Grafana showed "Plugin unavailable" and every Arc panel blipped. Merged columns are now nullable when any chunk's column is, chunks with mismatched column types are skipped, and a panic anywhere in query handling is recovered into a per-query error.
+- **Split-query chunks are no longer dropped when column types differ.** A column's type is now chosen across all chunks (first chunk with a non-null value), so an all-NULL chunk no longer decides it (previously 3 chunks gave 1 row). Int and float chunks widen to float64. Genuinely incompatible types (or column counts) return a query error naming the column and chunks instead of silently losing data.
+- An empty `x IN ()` stays `x IN (NULL)` (still cube-served by Arc's rollup router) unless a `NOT` keyword appears earlier in the statement; then it becomes `x IN (NULL) IS NOT NULL` (FALSE for every row, NULL included), so `NOT x IN ()`, `NOT (x IN ())`, `NOT(x IN ())` and `NOT lower(x) IN ()` keep every row, like `x NOT IN ()`. Those forms used to return no rows.
+- A time chunk with zero rows no longer makes every merged column (`time` included) nullable in a split query; only chunks that have rows can set nullability, so the schema matches the unsplit query.
+- The cube-only "data missing" window is computed on parsed timestamps (mixed fractional precision was compared as strings), disjoint partial chunks are listed as separate windows instead of one overstated span, and an unparseable `X-Arc-Partial` timestamp produces no notice.
+
+### Added
+- **Cube-only fallback (opt-in).** New datasource settings `tailFallback` (default off) and `tailDeadlineMs` (default 10000). When enabled, auto-rollup queries send `X-Arc-Tail-Fallback: cube-only` and `X-Arc-Tail-Deadline-Ms`; if Arc answers with `X-Arc-Partial: tail-missing; from=...; to=...` the panel shows one warning notice naming the missing range (one per panel, also for split queries). Not sent for `only`/`off` rollup modes. Needs an Arc version that supports the headers; older Arc ignores them.
+
+## [1.3.10] - 2026-10-20
+
+### Fixed
+- **An empty multi-value variable no longer breaks every panel with HTTP 500.** When a variable's query is slow, fails or is cancelled, "All" can expand to nothing, and `${var:singlequote}` (Grafana's own formatter, which never reaches the datasource's `interpolateVariable`) rendered `IN ()`, which Arc rejects with `Parser Error: syntax error`. The backend now rewrites empty lists as the last step of macro expansion, so panels, alerting, Explore, variable queries and the rollup hint all get valid SQL: `x IN ()` becomes `x IN (NULL)` (matches no row; Arc's rollup router still serves it from the cube) and `x NOT IN ()` becomes `x NOT IN (NULL) IS NULL` (true for every row, NULLs included, whereas plain `NOT IN (NULL)` would drop every row; the router can't serve this form from a cube, so it scans raw). Keywords match case-insensitively across any whitespace or comments; string literals, quoted identifiers and comments are left untouched.
+
 ## [1.3.9] - 2026-10-12
 
 ### Fixed

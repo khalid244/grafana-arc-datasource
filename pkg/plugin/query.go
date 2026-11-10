@@ -95,6 +95,7 @@ func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, t
 	case "only":
 		req.Header.Set("X-Arc-Rollup-Only", "true")
 	}
+	setTailFallbackHeaders(req, settings.settings, rollupMode)
 
 	// Execute request
 	client := &http.Client{
@@ -138,13 +139,19 @@ func QueryJSON(ctx context.Context, settings *ArcInstanceSettings, sql string, t
 	}
 
 	// Add metadata
+	custom := map[string]interface{}{
+		"executionTime": duration.Milliseconds(),
+		"servedBy":      servedBy,
+		"rollupCube":    cube,
+	}
+	// Arc served the cube-only result because today's raw tail failed or was too slow.
+	if pf, pt, ok := parseArcPartial(resp.Header.Get("X-Arc-Partial")); ok {
+		custom[partialFromKey] = pf
+		custom[partialToKey] = pt
+	}
 	frame.Meta = &data.FrameMeta{
 		ExecutedQueryString: sql,
-		Custom: map[string]interface{}{
-			"executionTime": duration.Milliseconds(),
-			"servedBy":      servedBy,
-			"rollupCube":    cube,
-		},
+		Custom:              custom,
 	}
 
 	return frame, nil
@@ -498,7 +505,9 @@ func ApplyMacros(sql string, timeRange backend.TimeRange, interval time.Duration
 	// Epoch math avoids this entirely.
 	sql = expandTimeGroup(sql)
 
-	return sql
+	// Last step, so nothing re-introduces it: an empty multi-value variable
+	// renders `IN ()`, which Arc rejects as a syntax error.
+	return fixEmptyInLists(sql)
 }
 
 // ApplyMacrosWithSplit replaces macros using the chunk's time range for filtering
@@ -519,7 +528,7 @@ func ApplyMacrosWithSplit(sql string, chunk backend.TimeRange, originalRange bac
 
 	sql = expandTimeGroup(sql)
 
-	return sql
+	return fixEmptyInLists(sql)
 }
 
 // intervalToSeconds converts an interval string to seconds.

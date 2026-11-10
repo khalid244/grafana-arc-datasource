@@ -399,12 +399,12 @@ func TestSplitTimeRange_BoundaryNoDuplicates(t *testing.T) {
 // --- mergeFrames ---
 
 func TestMergeFrames_Empty(t *testing.T) {
-	result := mergeFrames(nil)
+	result, _ := mergeFrames(nil)
 	if result != nil {
 		t.Errorf("expected nil for empty input")
 	}
 
-	result = mergeFrames([]*data.Frame{})
+	result, _ = mergeFrames([]*data.Frame{})
 	if result != nil {
 		t.Errorf("expected nil for empty slice")
 	}
@@ -415,7 +415,7 @@ func TestMergeFrames_Single(t *testing.T) {
 		data.NewField("time", nil, []time.Time{time.Now()}),
 		data.NewField("value", nil, []float64{1.0}),
 	)
-	result := mergeFrames([]*data.Frame{f})
+	result, _ := mergeFrames([]*data.Frame{f})
 	if result != f {
 		t.Errorf("expected same frame for single input")
 	}
@@ -434,7 +434,7 @@ func TestMergeFrames_TwoFrames(t *testing.T) {
 		data.NewField("value", nil, []float64{2.0}),
 	)
 
-	result := mergeFrames([]*data.Frame{f1, f2})
+	result, _ := mergeFrames([]*data.Frame{f1, f2})
 	if result.Rows() != 2 {
 		t.Fatalf("expected 2 rows, got %d", result.Rows())
 	}
@@ -444,13 +444,13 @@ func TestMergeFrames_SkipsNilFrames(t *testing.T) {
 	f := data.NewFrame("",
 		data.NewField("value", nil, []float64{1.0}),
 	)
-	result := mergeFrames([]*data.Frame{f, nil, nil})
+	result, _ := mergeFrames([]*data.Frame{f, nil, nil})
 	if result.Rows() != 1 {
 		t.Errorf("expected 1 row, got %d", result.Rows())
 	}
 }
 
-func TestMergeFrames_SkipsIncompatibleSchema(t *testing.T) {
+func TestMergeFrames_ErrorsOnColumnCountMismatch(t *testing.T) {
 	f1 := data.NewFrame("",
 		data.NewField("time", nil, []time.Time{time.Now()}),
 		data.NewField("value", nil, []float64{1.0}),
@@ -459,9 +459,8 @@ func TestMergeFrames_SkipsIncompatibleSchema(t *testing.T) {
 		data.NewField("value", nil, []float64{2.0}),
 	) // only 1 field vs 2
 
-	result := mergeFrames([]*data.Frame{f1, f2})
-	if result.Rows() != 1 {
-		t.Errorf("expected 1 row (incompatible frame skipped), got %d", result.Rows())
+	if _, err := mergeFrames([]*data.Frame{f1, f2}); err == nil {
+		t.Errorf("expected an error for a chunk with a different column count")
 	}
 }
 
@@ -471,7 +470,7 @@ func TestMergeFrames_SkipsEmptyFirstFrame(t *testing.T) {
 		data.NewField("value", nil, []float64{1.0, 2.0}),
 	)
 
-	result := mergeFrames([]*data.Frame{empty, f})
+	result, _ := mergeFrames([]*data.Frame{empty, f})
 	if result.Rows() != 2 {
 		t.Errorf("expected 2 rows (empty first frame skipped), got %d", result.Rows())
 	}

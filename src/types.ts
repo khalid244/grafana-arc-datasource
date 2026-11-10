@@ -9,6 +9,8 @@ export interface ArcDataSourceOptions extends DataSourceJsonData {
   timeout?: number;
   useArrow?: boolean;
   maxConcurrency?: number;
+  tailFallback?: boolean; // ask Arc to return cube-only data when today's raw tail is too slow (auto rollup mode only)
+  tailDeadlineMs?: number; // tail read budget before Arc degrades to cube-only
 }
 
 /**
